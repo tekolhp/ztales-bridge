@@ -1,0 +1,14 @@
+{
+  "name": "ztales-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ZTales bridge: a Cloudflare Worker between a Project Zomboid server (over FTP) and the story AI",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.129.0"
+  }
+}

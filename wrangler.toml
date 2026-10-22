@@ -1,0 +1,66 @@
+name = "ztales-bridge"
+main = "src/index.js"
+compatibility_date = "2026-09-04"
+
+# Every minute; the Worker itself decides whether to connect (every minute while players are
+# online, every 10 minutes while the server is empty). See src/tick.js.
+[triggers]
+crons = ["* * * * *"]
+
+# Create once:  npx wrangler d1 create ztales   (paste the id below)
+# Then:         npx wrangler d1 execute ztales --remote --file=schema.sql
+[[d1_databases]]
+binding = "ZTALES"
+database_name = "ztales"
+database_id = "PUT-YOUR-D1-ID-HERE"
+
+# docs/04-brain-handoff.md is imported as the AI's system prompt
+[[rules]]
+type = "Text"
+globs = ["**/*.md"]
+fallthrough = true
+
+[observability]
+enabled = true
+
+# Not secret. The folder is where the mod writes, as the FTP account sees it.
+[vars]
+ZTALES_ROOT = "/Zomboid/Lua/ZTales"
+FTP_PORT = "21"
+FTP_TLS = "0"
+# Where the server's players live, for counting "real days on which someone played" (HintPace).
+TZ_OFFSET_HOURS = "-3"
+# The story AI. openrouter or anthropic; the model id exactly as the provider lists it
+# (e.g. the newest Claude Sonnet on openrouter.ai/models). Empty model = no AI calls.
+AI_PROVIDER = "openrouter"
+AI_MODEL = ""
+# The stronger model that designs the story and tells it at the end; AI_MODEL fills the stages.
+# Empty: AI_MODEL does everything.
+# The game's sandbox options (page ZTales, "AI model: ...") override both per task; their
+# "Default" keeps these (README, "Choosing the AI models").
+AI_STORY_MODEL = ""
+AI_FALLBACK_MODELS = ""
+MAX_CALLS_PER_DAY = "48"
+# AI_PROVIDER anthropic: the answer comes back through one tool call the API parses, so a stray
+# character never breaks a paid answer. "0" turns it off (plain text, repaired when broken).
+AI_STRUCTURED = "1"
+# Output-token caps per task (empty: bible 12000, stage 8000, echo 1500, watch 2000). A cap only
+# stops a runaway answer; docs/04 asks for much less.
+AI_MAX_TOKENS_BIBLE = ""
+AI_MAX_TOKENS_STAGE = ""
+AI_MAX_TOKENS_ECHO = ""
+AI_MAX_TOKENS_WATCH = ""
+# What the AI may cost in 24 h, failed calls included (US dollars). The bridge stops asking until
+# the day rolls over. Set a spending limit at the provider too.
+MAX_USD_PER_DAY = "1"
+# Between stories: the next one is written once the in-game day turned this many times since the
+# last one ended, with someone online.
+NEXT_STORY_GAME_DAYS = "1"
+
+# Secrets, typed by the server owner (never in this file):
+#   npx wrangler secret put FTP_HOST
+#   npx wrangler secret put FTP_USER
+#   npx wrangler secret put FTP_PASS
+#   npx wrangler secret put TOKEN      (protects /status, /probe, /tick-now)
+#   npx wrangler secret put AI_KEY     (OpenRouter or Anthropic key)
+#   npx wrangler secret put BIBLE_KEY  (any long random text; encrypts the story bible in D1)
