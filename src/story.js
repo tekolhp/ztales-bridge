@@ -616,7 +616,9 @@ export function makeDecide(deps) {
         const pr = plainRings(facts, { languages, room: askedRoom });
         const far = (accepted.find((d) => d.id === `${prefix}prox_${node}_far_r`)?.then || []).find((x) => x?.type === "diary_entry")?.text;
         if (!pr || far === undefined) return { notes: [`${purpose}: ${why}: the story's rings stay`] };
-        let out = withRingTexts(accepted, node, { far, mid: pr.mid, near: pr.near }, prefix).directives;
+        // the story's far stays unless it names the place; then the plain one
+        const farNames = cluesGate({ far, mid: pr.mid, near: pr.near }, { facts: facts.facts, languages }).errors.some((e) => e.startsWith("far: names"));
+        let out = withRingTexts(accepted, node, { far: farNames ? pr.far : far, mid: pr.mid, near: pr.near }, prefix).directives;
         const notes = [`${purpose}: ${why}: mid and near in plain words from ${b.id}`];
         if (pr.room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
           out = withPieceRoom(out, piece.id, pr.room);
@@ -670,7 +672,7 @@ export function makeDecide(deps) {
       debug.push({ kind: "clues", model: res.model, cost: res.cost, answer: res.doc, raw: res.raw ?? null, rejections: errors });
       if (!out) return plain(`refused (${errors.slice(0, 3).join("; ")})`);
       const notes = [`${purpose}: rings rewritten from ${b.id} (mid ${g.cited.mid.join(", ")}; near ${g.cited.near.join(", ")})`];
-      // the piece goes where the clues point: the room the near line names, when none was asked
+      // the piece goes where the clues point: the room the near line evokes, when none was asked
       if (g.room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
         out = withPieceRoom(out, piece.id, g.room);
         notes.push(`${purpose}: ${piece.id} asked into the ${g.room}, as the clues say`);

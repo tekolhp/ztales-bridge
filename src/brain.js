@@ -25,7 +25,7 @@ export class BrainError extends Error {
 // stage 16000: a first chapter with its pieces, rings and stall steps was cut at 8000 (production
 // 2026-10-22); the cap is a guard, not a target
 // clues 1500: the clue agent's three ring lines and their cites (src/clues.js, 2026-10-23)
-export const MAX_TOKENS = { story: 12000, stage: 16000, dream: 1500, watch: 2000, clues: 1500 };
+export const MAX_TOKENS = { story: 12000, stage: 16000, dream: 1500, watch: 2000, clues: 3000 };
 
 /** The owner's caps, from the Worker vars AI_MAX_TOKENS_BIBLE / _STAGE / _ECHO / _WATCH / _CLUES (0: the default). */
 export function tokenCaps(env = {}) {

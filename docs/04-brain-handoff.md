@@ -100,7 +100,8 @@ The bridge tells you when the current chapter has stalled and which help step is
 2. a clue that narrows the place by its function;
 3. a diary entry (`player: "$player"`) that ties two marks together in their voice;
 4. a beacon at the place (radio at seven, an alarm, a noise).
-Never a circled map, never the answer, never the ending. There is no deadline. The steps come
+Steps 1-2 stay indirect like the rings (what a person did, smelled or heard there); only steps 3-4
+may name the kind of room or place. Never a circled map, never the answer, never the ending. There is no deadline. The steps come
 back after step 4, plainer each time: what you address to `"$player"` (a diary entry, a player
 chat) reaches every player online, each cycle; a server chat or a sound repeats each cycle; what
 you place in the world is placed once.
@@ -242,7 +243,7 @@ question, its place by function, its piece) and `stall.step` (0 to 4: how long i
 For each player, answer at most one `diary_entry` for that player, or nothing:
 - a **hint fitted to what they did**: they passed a hospital, the piece is in another hospital,
   so the line remembers that hospital and doubts it was the right one. Plainer as `stall.step`
-  grows (0-1: a feeling; 2-3: the kind of place; 4: the kind of place and what to look for);
+  grows (0-1: a feeling; 2: what was done there; 3: the kind of place; 4: it and what to look for);
 - or a short **record of their stretch** (`"kind": "record"`), when nothing fits;
 - never coordinates, a building id, the piece's id, the ending or a forbidden name.
 Answer only `{ "directives": [ { "type": "diary_entry", "player", "kind": "hint" | "record", "text": {lang: text} } ] }`, at most 600 characters each.
@@ -253,15 +254,19 @@ Once a chapter's piece has a building, you rewrite its three ring lines. `clues_
 piece (and the room or container it was asked into), what the chapter says (`solution`), the
 story writer's rings (`story_rings`: keep their voice, not their place), and the building's
 `facts`, each with an `id`, what it says, and `distinctive` (only this building has it).
-- `far`: the chapter's theme or feeling. `mid`: turns the reader toward the real kind of place
-  ("not a shop: a house"), citing a fact. `near`: a detail only this building has, citing a
-  distinctive fact (a room it has, its floors, its name). If the piece was asked into a room,
-  never name another room.
+- **Indirect**: never say what the place is (laundry, kitchen, garage, workshop, bar, house,
+  shop...). Suggest it through what any person would smell, hear, feel or do there: starch,
+  steam, folding for a laundry room; grease, rust, oil for a garage; alcohol, tobacco for a bar;
+  a projector's hum for a cinema; the cold for a meat locker. Proper names (town, neighbour) are fine.
+- `far`: the chapter's feeling. `mid`: turns the reader toward the real kind of place by what was
+  done there ("someone pressed their own whites by hand"). `near`: what only a distinctive fact
+  gives (its room's work and smells; a basement: "the cold of the steps going down"). If the
+  piece was asked into a room, never evoke another room.
 - Each line stands alone, is remembered later (never "here, now"), at most 400 characters. Never
   a coordinate, a direction, a distance, the piece itself or a forbidden name.
 Answer only `{ "far": {lang: text}, "mid": {...}, "near": {...}, "cites": { "mid": [ { "fact":
-"<id>" } ], "near": [ ... ] } }`. The bridge reads each line for the facts; if mid or near shows
-none, code writes them in plain words from the facts.
+"<id>" } ], "near": [ ... ] } }`. A place name refuses the answer; so does a mid or near
+showing no fact by what was done there. Then code writes plain indirect lines from the facts.
 
 ### What the bible must hold so the story can be followed
 
@@ -292,7 +297,8 @@ The bible spells out, for every node:
   last node ends at the urn. The bridge refuses a stage without it.
 - **A line near a node says there is something there.** The proximity lines (far, mid, near)
   are unease that grows into the certainty that something is in that place to be found:
-  "near" names the kind of place and that something waits in it, never the object itself.
+  "near" shows the kind of place by what was done there (never its name) and that something
+  waits in it, never the object itself.
 
 ### The finale (Teko, 2026-10-20)
 
@@ -531,7 +537,7 @@ Tone examples, never to be copied (write your own every time):
 - "That side of town sits wrong with me. It smells the way everything smelled the week the phones
   died: hot dust, wet paper, something sweet underneath. I washed my hands twice tonight and I can
   still smell it."
-- "The laundromat again, behind my eyes. A machine stopped mid-turn, a door left open. Someone left
+- "Warm cotton again, behind my eyes. A drum stopped mid-turn, a door left open. Someone left
   in a hurry and meant to come back for something. I keep counting while I think about it. I don't
   know what I'm counting."
 - "I was close. Under everything there was a hiss, like a radio left on in another room, and for
@@ -558,10 +564,10 @@ really is; you only write the words.
   gap of their play: when they come back on another real day, when the character wakes up, sits
   down or reads, or after a calm stretch, never sooner than two in-game hours. So write each
   reflection as something remembered afterwards, not felt in the moment:
-  "I keep thinking about that laundromat", not "something is here".
-- Point back to the place by its kind (the laundromat, the church by the river, the second floor
-  of the clinic), never by an address, a direction or a distance. It should make the player want
-  to go back, not tell them where to stand.
+  "I keep thinking about that hot starch in the air", not "something is here".
+- Point back to the place by what a person smelled, heard or did there (starch and steam, candle
+  wax by the river), never by its name, an address, a direction or a distance. It should make the
+  player want to go back, not tell them where to stand.
 - Only the strongest ring a player reached is kept. Each must stand alone.
 - Same for every `diary_entry`: it will be read later, in a quiet moment. Never "right now".
 

@@ -82,10 +82,11 @@ function inAll(v, langs, key = null) {
   return v;
 }
 
+// indirect (Teko, 2026-10-23): never the room's or the place's name, only what was done and sensed there
 const GOOD = {
   far: "A ticket for clean shirts nobody came back for.",
-  mid: "Not a shop. A house, one that washed its own.",
-  near: "That laundry room in the big house, the dryer door open.",
+  mid: "Someone lived there and pressed their own whites by hand.",
+  near: "Warm starch and the spin of the drum, the smell of soap on everything.",
   cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "room:laundry" }] },
 };
 
@@ -148,12 +149,12 @@ test("clues: the call is logged as clues#<node> and its cost counts against the 
 
 test("clues: an answer that fails the gate gives plain rings from the facts (logged, cost counted)", async () => {
   // near cites only the kind of place, which every house has: not distinctive
-  const weak = { ...GOOD, near: "A house. It was a house.", cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "kind:home" }] } };
+  const weak = { ...GOOD, near: "Someone lived there. They cooked there.", cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "kind:home" }] } };
   const { sent, store, r, clueCalls } = await seed({ clue: weak });
   assert.equal(clueCalls.length, 1, "never asked again blindly");
-  assert.equal(ringText(sent, "far"), PROX.far, "the story's far ring keeps the mood");
-  assert.equal(ringText(sent, "mid"), "Not a shop, I think. Someone's house.");
-  assert.match(ringText(sent, "near"), /^A house.*laundry.*It is in there\.$/);
+  assert.equal(ringText(sent, "far"), "Something about that place keeps coming back to me, the way a smell does.", "a far that names the place gives way to the plain one");
+  assert.equal(ringText(sent, "mid"), "Someone lived there, cooked there, kept their own things in order.");
+  assert.equal(ringText(sent, "near"), "Warm cotton, starch, the drum still turning in my head. Northwest of Riverside Laundromat. It is in there.");
   assert.equal(pieceOf(sent).target.room, "laundry", "the piece goes where the plain words point");
   const log = store.callLog.find((c) => c.purpose === "clues#n1");
   assert.equal(log.cost_usd, 0.002);
@@ -171,7 +172,7 @@ test("clues: a cite the text does not show, or a fact never given, is refused", 
 
 test("clues: a failed call gives plain rings and never fails the stage", async () => {
   const { sent, store, r } = await seed({ clue: new BrainError("answer is not valid JSON", 0, 0.003, "{oops") });
-  assert.equal(ringText(sent, "mid"), "Not a shop, I think. Someone's house.");
+  assert.equal(ringText(sent, "mid"), "Someone lived there, cooked there, kept their own things in order.");
   const log = store.callLog.find((c) => c.purpose === "clues#n1");
   assert.equal(log.ok, false);
   assert.equal(log.cost_usd, 0.003, "a failed call is still paid for");
@@ -209,12 +210,12 @@ test("clues: ids unchanged, so a stage written twice adds nothing", async () => 
   assert.equal(g.rejected.length, again.length);
 });
 
-test("clues: two languages, each line shows its facts in each (a translated room by the cite's words)", async () => {
+test("clues: two languages, each line shows its facts in each by what was done there", async () => {
   const two = {
     far: { en: "A ticket for clean shirts.", "pt-br": "Um tíquete de camisas limpas." },
-    mid: { en: "Not a shop. A house.", "pt-br": "Não uma loja. Uma casa." },
-    near: { en: "The laundry room, the dryer open.", "pt-br": "A lavanderia da casa, a secadora aberta." },
-    cites: { mid: [{ fact: "kind:home", words: { "pt-br": "casa" } }], near: [{ fact: "room:laundry", words: { "pt-br": "lavanderia" } }] },
+    mid: { en: "Someone lived there and pressed their own whites by hand.", "pt-br": "Alguém morava ali e passava a própria roupa branca à mão." },
+    near: { en: "Warm starch, the drum spinning, the smell of soap.", "pt-br": "Goma morna, o tambor girando, o cheiro de sabão." },
+    cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "room:laundry" }] },
   };
   const { sent } = await seed({ clue: two, languages: ["en", "pt-br"] });
   assert.deepEqual(ringText(sent, "near"), two.near);
@@ -237,24 +238,34 @@ test("facts: rare rooms, a basement few have and two floors are distinctive; the
   assert.equal(f["neighbour:Riverside Laundromat"].kind, "neighbour");
 });
 
-test("gate: English must show the fact's own word; 'laundromat' is not the laundry room", () => {
-  const g = cluesGate({ ...GOOD, near: "The laundromat, the machines.", cites: { mid: GOOD.cites.mid, near: [{ fact: "room:laundry" }] } },
-    { facts, languages: ["en"] });
+test("gate: naming the room or the kind of place is refused in any ring; proper names stay", () => {
+  const g = cluesGate({ ...GOOD, near: "The laundromat, the machines, starch." }, { facts, languages: ["en"] });
   assert.equal(g.ok, false);
-  assert.ok(g.errors.includes("near: shows nothing only this building has"));
+  assert.ok(g.errors.includes('near: names the place ("laundromat") in en'), g.errors.join("; "));
+  const h = cluesGate({ ...GOOD, far: "A house by the river." }, { facts, languages: ["en"] });
+  assert.ok(h.errors.includes('far: names the place ("house") in en'));
+  const k = cluesGate({ ...GOOD, mid: { en: GOOD.mid, "pt-br": "Alguém morava naquela casa." }, far: { en: GOOD.far, "pt-br": "Um tíquete." },
+    near: { en: GOOD.near, "pt-br": "A goma, o tambor girando." } }, { facts, languages: ["en", "pt-br"] });
+  assert.ok(k.errors.includes('mid: names the place ("casa") in pt-br'), k.errors.join("; "));
+  // the neighbour's own name holds a place word: a proper name, allowed
+  const ok = cluesGate({ ...GOOD, near: "Starch and the spin of the drum, not far from Riverside Laundromat." }, { facts, languages: ["en"] });
+  assert.equal(ok.ok, true, ok.errors.join("; "));
   assert.equal(cluesGate(GOOD, { facts, languages: ["en"] }).ok, true);
+  // a bare activity of 4+ letters matches its longer forms
+  const st = cluesGate({ ...GOOD, near: "Shirts ironed and folded, still warm." }, { facts, languages: ["en"] });
+  assert.equal(st.ok, true, st.errors.join("; "));
 });
 
-test("gate: a proper name must appear in every language; a missing language fails", () => {
-  const near = { en: "Two floors over the basement.", "pt-br": "Dois andares sobre o porão." };
-  const ok = cluesGate({ far: { en: "a", "pt-br": "a" }, mid: { en: "Riverside, a house.", "pt-br": "Riverside, uma casa." }, near,
-    cites: { mid: [{ fact: "region:Riverside" }], near: [{ fact: "basement", words: { "pt-br": "porão" } }] } }, { facts, languages: ["en", "pt-br"] });
+test("gate: every language shows the fact by its own activity words; a missing language fails", () => {
+  const near = { en: "The cold of the steps going down.", "pt-br": "O frio dos degraus descendo." };
+  const ok = cluesGate({ far: { en: "a", "pt-br": "a" }, mid: { en: "Someone lived there, in Riverside.", "pt-br": "Alguém morava ali, em Riverside." }, near },
+    { facts, languages: ["en", "pt-br"] });
   assert.equal(ok.ok, true, ok.errors.join("; "));
-  const miss = cluesGate({ far: { en: "a" }, mid: { en: "Riverside", "pt-br": "a cidade" }, near,
-    cites: { mid: [{ fact: "region:Riverside" }], near: [{ fact: "basement", words: { "pt-br": "porão" } }] } }, { facts, languages: ["en", "pt-br"] });
+  assert.deepEqual(ok.cited.near, ["basement"]);
+  const miss = cluesGate({ far: { en: "a" }, mid: { en: "Riverside", "pt-br": "a cidade" }, near }, { facts, languages: ["en", "pt-br"] });
   assert.equal(miss.ok, false);
   assert.ok(miss.errors.includes("far: no text in pt-br"));
-  assert.ok(miss.errors.includes("mid: shows none of the building's facts"), "the name must be in the pt-br line too");
+  assert.ok(miss.errors.includes("mid: shows none of the building's facts"), "a proper name alone does not turn the reader");
 });
 
 test("gate: when the piece was asked into a room, another room may not be named", () => {
@@ -262,7 +273,10 @@ test("gate: when the piece was asked into a room, another room may not be named"
   assert.equal(f.find((x) => x.id === "room:kitchen").distinctive, true, "the asked room counts as distinctive");
   const g = cluesGate(GOOD, { facts: f, languages: ["en"], room: "kitchen" });
   assert.equal(g.ok, false);
-  assert.match(g.errors.join(" "), /names room:laundry but the piece is in the kitchen/);
+  assert.match(g.errors.join(" "), /near: evokes room:laundry \("starch"\) but the piece is in the kitchen/);
+  const k = cluesGate({ ...GOOD, near: "Onions frying, the kettle starting to sing." }, { facts: f, languages: ["en"], room: "kitchen" });
+  assert.equal(k.ok, true, k.errors.join("; "));
+  assert.equal(k.room, "kitchen");
 });
 
 test("words: room ids read as words; whole words only, accents ignored", () => {
@@ -275,7 +289,7 @@ test("words: room ids read as words; whole words only, accents ignored", () => {
 });
 
 test("clues: the chapter model, its own token cap", () => {
-  assert.equal(maxTokensFor({ role: "clues", task: "clues" }), 1500);
+  assert.equal(maxTokensFor({ role: "clues", task: "clues" }), 3000);
   assert.equal(modelFor("clues", "anthropic", { stage: "claude-haiku-5-5", story: "claude-opus-5-5" }, "x"), "claude-haiku-5-5");
 });
 
@@ -291,25 +305,83 @@ test("clues: plain rings, both languages, a compass from the nearest named place
   };
   const r = plainRings(facts, { languages: ["en", "pt-br"] });
   assert.equal(r.room, "laundry");
-  assert.equal(r.near.en, "A house with an upper floor, and in it the laundry, east of Riverside Country Club. It is in there.");
-  assert.equal(r.near["pt-br"], "Uma casa de dois andares, e dentro dela a lavanderia, a leste de Riverside Country Club. Está lá dentro.");
-  assert.equal(r.mid["pt-br"], "Não é loja, acho. A casa de alguém.");
+  assert.equal(r.near.en, "Warm cotton, starch, the drum still turning in my head. East of Riverside Country Club. It is in there.");
+  assert.equal(r.near["pt-br"], "Algodão morno, goma, o tambor girando na minha cabeça. A leste de Riverside Country Club. Está lá dentro.");
+  assert.equal(r.mid.en, "Someone lived there, cooked there, kept their own things in order.");
+  assert.equal(r.mid["pt-br"], "Alguém morava ali, cozinhava ali, cuidava das próprias coisas.");
+  const alone = plainRings({ ...facts, neighbour: null }, { languages: ["en"] });
+  assert.equal(alone.near, "Warm cotton, starch, the drum still turning in my head. Somewhere in Riverside. It is in there.");
+  // catalog aliases share a room's line: the cold for a butcher, the hum of a projector for a home cinema
+  const as = (room) => plainRings({ ...facts, neighbour: null }, { languages: ["en"], room }).near;
+  assert.match(as("knoxbutcher"), /^A cleaver in the block, raw meat on hooks, the cold/);
+  assert.match(as("homecinema"), /^The hum of a projector/);
+  assert.match(as("restaurantkitchen"), /^Onions frying/);
 });
 
-test("clues gate: reads the lines itself (live Haiku answer 2026-10-23, no cite on near)", async () => {
-  const { cluesGate } = await import("../src/clues.js");
+test("plain rings: every room's line passes the clue gate itself, in both languages, never naming a place", async () => {
+  const { plainRings, PLAIN_ROOMS } = await import("../src/clues.js");
+  assert.ok(PLAIN_ROOMS.length >= 30, `${PLAIN_ROOMS.length} rooms`);
+  for (const room of PLAIN_ROOMS) {
+    // the room asked into, every other room of the table present too (so near may evoke none of them)
+    const fs = [
+      { id: "kind:home", kind: "kind", words: ["house", "home"], proper: false, distinctive: false },
+      ...PLAIN_ROOMS.map((r) => ({ id: `room:${r}`, kind: "room", words: roomWords(r), proper: false, distinctive: r === room })),
+      { id: "basement", kind: "basement", words: ["basement"], proper: false, distinctive: false },
+      { id: "region:Riverside", kind: "region", words: ["Riverside"], proper: true, distinctive: false },
+      { id: "neighbour:Riverside Laundromat", kind: "neighbour", words: ["Riverside Laundromat"], proper: true, distinctive: false },
+    ];
+    const facts = { building: { id: "b_10600_9600", floors: 1, region: "Riverside" }, facts: fs,
+      neighbour: { name: "Riverside Laundromat", x: 10700, y: 9700 } };
+    for (const languages of [["en"], ["pt-br"], ["en", "pt-br"]]) {
+      const r = plainRings(facts, { languages, room });
+      assert.equal(r.room, room);
+      const g = cluesGate({ far: languages.length > 1 ? { en: "Clean shirts.", "pt-br": "Camisas limpas." } : "Clean shirts.", mid: r.mid, near: r.near },
+        { facts: fs, languages, room });
+      assert.equal(g.ok, true, `${room} ${languages}: ${g.errors.join("; ")} | ${JSON.stringify(r.near)}`);
+      assert.ok(g.cited.near.includes(`room:${room}`), `${room}: near shows its own room`);
+      assert.equal(g.room, room);
+    }
+  }
+});
+
+test("plain rings: no distinctive room with a line, a distinctive basement speaks", async () => {
+  const { plainRings } = await import("../src/clues.js");
+  const fs = [{ id: "kind:home", kind: "kind" }, { id: "room:kitchen", kind: "room", distinctive: false },
+    { id: "basement", kind: "basement", distinctive: true }];
+  const r = plainRings({ building: { id: "b_1_1", region: "Muldraugh" }, facts: fs }, { languages: ["en"] });
+  assert.equal(r.room, null);
+  assert.equal(r.near, "The cold of the steps going down, the dark under the floor. Somewhere in Muldraugh. It is in there.");
+  const g = cluesGate({ far: "x", mid: r.mid, near: r.near }, { facts: fs, languages: ["en"] });
+  assert.equal(g.ok, true, g.errors.join("; "));
+});
+
+test("clues gate: the live Haiku answer of 2026-10-23 names the place and is refused; an indirect rewrite passes", async () => {
   const facts = [
+    { id: "kind:home", kind: "kind", words: ["house", "home"], proper: false, distinctive: false },
     { id: "room:laundry", kind: "room", words: ["laundry", "laundry room", "washing machine", "washer"], proper: false, distinctive: true },
     { id: "basement", kind: "basement", words: ["basement", "cellar"], proper: false, distinctive: true },
     { id: "region:Riverside", kind: "region", words: ["Riverside"], proper: true, distinctive: false },
   ];
-  const answer = {
+  const live = {
     far: { en: "I keep thinking about that laundry, the hot starch still hanging in the air.", "pt-br": "Não paro de pensar naquela lavanderia, a goma quente ainda no ar." },
     mid: { en: "Not a laundromat after all, I think. A house with a laundry room of its own.", "pt-br": "Não era lavanderia de bairro, acho. Uma casa com lavanderia própria." },
     near: { en: "Past the washing, the stairs go down to a basement, and something down there is still waiting.", "pt-br": "Depois da roupa, a escada desce até um porão, e algo lá embaixo ainda espera o dono." },
     cites: { mid: [{ fact: "room:laundry" }] },
   };
-  const g = cluesGate(answer, { facts, languages: ["en", "pt-br"] });
+  const bad = cluesGate(live, { facts, languages: ["en", "pt-br"] });
+  assert.equal(bad.ok, false);
+  for (const e of ['far: names the place ("laundry") in en', 'far: names the place ("lavanderia") in pt-br',
+    'mid: names the place ("laundry") in en', 'mid: names the place ("lavanderia") in pt-br',
+    'near: names the place ("basement") in en', 'near: names the place ("porao") in pt-br']) assert.ok(bad.errors.includes(e), `${e} | ${bad.errors.join("; ")}`);
+  const indirect = {
+    far: { en: "I keep thinking about the hot starch still hanging in the air.", "pt-br": "Não paro de pensar na goma quente ainda no ar." },
+    mid: { en: "Not a place where strangers queued with their bags. Someone pressed their own whites there, by hand.",
+      "pt-br": "Não era lugar de estranhos com sacolas. Alguém passava a própria roupa branca ali, à mão." },
+    near: { en: "Past the washing, the cold of the steps going down, and something down there still waiting.",
+      "pt-br": "Depois da roupa, o frio dos degraus descendo, e algo lá embaixo ainda espera o dono." },
+  };
+  const g = cluesGate(indirect, { facts, languages: ["en", "pt-br"] });
   assert.equal(g.ok, true, g.errors.join("; "));
+  assert.deepEqual(g.cited.mid, ["room:laundry"]);
   assert.deepEqual(g.cited.near, ["basement"]);
 });

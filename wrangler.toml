@@ -50,7 +50,7 @@ AI_MAX_TOKENS_BIBLE = ""
 AI_MAX_TOKENS_STAGE = ""
 AI_MAX_TOKENS_ECHO = ""
 AI_MAX_TOKENS_WATCH = ""
-AI_MAX_TOKENS_CLUES = ""
+AI_MAX_TOKENS_CLUES = "3000"
 # What the AI may cost in 24 h, failed calls included (US dollars). The bridge stops asking until
 # the day rolls over. Set a spending limit at the provider too.
 MAX_USD_PER_DAY = "2"
