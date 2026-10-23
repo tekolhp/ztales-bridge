@@ -22,12 +22,16 @@ export class BrainError extends Error {
  * cost $0.20 for nothing). The answer budget in docs/04 aims well under these; the cap only stops
  * a runaway. Overridable per role by the Worker's vars (src/run.js).
  */
-export const MAX_TOKENS = { story: 12000, stage: 8000, dream: 1500, watch: 2000 };
+// stage 16000: a first chapter with its pieces, rings and stall steps was cut at 8000 (production
+// 2026-10-22); the cap is a guard, not a target
+// clues 1500: the clue agent's three ring lines and their cites (src/clues.js, 2026-10-23)
+export const MAX_TOKENS = { story: 12000, stage: 16000, dream: 1500, watch: 2000, clues: 1500 };
 
-/** The owner's caps, from the Worker vars AI_MAX_TOKENS_BIBLE / _STAGE / _ECHO / _WATCH (0: the default). */
+/** The owner's caps, from the Worker vars AI_MAX_TOKENS_BIBLE / _STAGE / _ECHO / _WATCH / _CLUES (0: the default). */
 export function tokenCaps(env = {}) {
   return { story: Number(env.AI_MAX_TOKENS_BIBLE) || 0, stage: Number(env.AI_MAX_TOKENS_STAGE) || 0,
-    dream: Number(env.AI_MAX_TOKENS_ECHO) || 0, watch: Number(env.AI_MAX_TOKENS_WATCH) || 0 };
+    dream: Number(env.AI_MAX_TOKENS_ECHO) || 0, watch: Number(env.AI_MAX_TOKENS_WATCH) || 0,
+    clues: Number(env.AI_MAX_TOKENS_CLUES) || 0 };
 }
 
 /** The cap for one call (opts: { role, task }): a one-writer seed (bible and node one) gets both. */
@@ -83,11 +87,12 @@ ${lore}` : systemPrompt(brainMarkdown);
  * answer the players have already overtaken (docs/04, "You answer a snapshot").
  */
 export function buildContext({ task, state_version, bible = null, state = {}, ledger = [], events = [],
-  journeys = {}, motifs = [], catalog = {}, rejections = [], stage = null, stall = null, echo_for = null, watch_for = null, bodies = null }) {
+  journeys = {}, motifs = [], catalog = {}, rejections = [], stage = null, stall = null, echo_for = null, watch_for = null, bodies = null, clues_for = null }) {
   const ctx = { task, state_version, bible, state, ledger, events, journeys, motifs, catalog, rejections, stage, stall };
   if (echo_for) ctx.echo_for = echo_for;   // task "echo" only: whose next life finds a dream
   if (bodies) ctx.bodies = bodies;   // task "echo" only: where a life that carried a piece lies
   if (watch_for) ctx.watch_for = watch_for;   // task "watch" only: each player's block of play
+  if (clues_for) ctx.clues_for = clues_for;   // task "clues" only: the piece's real building (src/clues.js)
   return JSON.stringify(ctx);
 }
 

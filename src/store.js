@@ -42,6 +42,10 @@ export class MemoryStore {
   async markMotifsUsed(ids) { for (const i of ids) { const m = this.motifMap.get(i); if (m) m.used = true; } }
   async logCall(c, atSec) { this.callLog.push({ ...c, at: atSec }); }
   async callsSince(sec) { return this.callLog.filter((c) => c.at >= sec).length; }
+  async lastRaw(prefix, sinceSec) {
+    const c = [...this.callLog].reverse().find((x) => x.ok && x.at >= sinceSec && String(x.purpose || "").startsWith(prefix) && x.raw);
+    return c ? c.raw : null;
+  }
   async costSince(sec) { return this.callLog.filter((c) => c.at >= sec).reduce((a, c) => a + (Number(c.cost_usd) || 0), 0); }
 
   async getState() { return { ...this.state }; }
@@ -198,6 +202,15 @@ export class D1Store {
       }
       await insert();
     }
+  }
+
+  // the newest successful answer of a task (still sealed), to reuse what was already paid for
+  async lastRaw(prefix, sinceSec) {
+    try {
+      const r = await this.db.prepare("SELECT raw FROM calls WHERE ok = 1 AND at >= ?1 AND purpose LIKE ?2 AND raw IS NOT NULL ORDER BY id DESC LIMIT 1")
+        .bind(sinceSec, `${prefix}%`).first();
+      return r ? r.raw : null;
+    } catch { return null; }
   }
 
   async callsSince(sec) {

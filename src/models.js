@@ -17,7 +17,8 @@ export const MODEL_IDS = {
 };
 
 const ROLES = ["story", "stage", "dream"];
-const ALIAS = { watch: "stage" };
+// "clues" (src/clues.js: a chapter's rings rewritten from its piece's real building) is a chapter's job too
+const ALIAS = { watch: "stage", clues: "stage" };
 
 /** seq.json's `models` -> { story, stage, dream }, each a whitelisted id or null. */
 export function cleanModels(doc) {

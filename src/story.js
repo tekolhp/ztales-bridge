@@ -15,7 +15,7 @@
  *
  * Returns { directives, hints } for tick() to gate and push.
  */
-import { buildContext, BrainError } from "./brain.js";
+import { buildContext, BrainError, readAnswer } from "./brain.js";
 import { seal, open } from "./crypto.js";
 import { ensureChapterEnds, fixUnreadable, fixSetNodes, duplicatePieces, splitStall, gateBatch, missingCoverage,
   sharedSpots, storyItems, fixClueItems, fillClosingPlayers, PLAIN_NOTE } from "./gates.js";
@@ -34,6 +34,8 @@ import { stepsDue, stepOf, cycleOf } from "./pacing.js";
 import { chapterEndTexts } from "./chapterend.js";
 import { notePages, noteFaded, readContributions, planExtras, checkExtraChapter, scoreMin } from "./contribution.js";
 import { blockMaterial, gateWatch, WATCH_MAX_PER_CALL } from "./watch.js";
+import { CLUES_PROMPT, buildingsOf, buildingOfTarget, pieceDirective, buildingFacts, plainRings, cluesGate, withRingTexts,
+  withPieceRoom, ringsIn, stageTexts } from "./clues.js";
 import { bodyPlace, bodyCells, bodyForDream, carrierEntry } from "./carrier.js";
 
 export const CLUE_FAMILIES = ["Note", "Map", "Key", "Photo", "Cassette", "VHS", "Walkie", "PartA", "PartB", "PartC"];
@@ -594,6 +596,88 @@ export function makeDecide(deps) {
         note: `watch: ${g.accepted.map((d) => `${d.kind} for ${d.player}`).join(", ") || "nothing written"}${quiet.length ? ` (nothing for ${quiet.join(", ")})` : ""}` };
     }
 
+    // The clue agent (src/clues.js): one call, the chapter model, the rings rewritten from the
+    // building the piece is really in. Returns { notes, directives? }: directives only when the
+    // answer passed cluesGate; otherwise the story's own rings stay (never a retry, never a block).
+    async function runClues({ axisNode, prefix, answer, accepted, bible, buildings, debug }) {
+      const node = axisNode.id;
+      const purpose = `clues#${node}`;
+      const inBatch = pieceDirective(accepted, axisNode);
+      const piece = inBatch || pieceDirective(Object.values(state.piece_dirs || {}), axisNode);
+      const b = piece ? buildingOfTarget(piece.target, buildings) : null;
+      if (!b) return { notes: [`${purpose}: the piece's building is not in the catalog read: the story's rings stay`] };
+      const askedRoom = typeof piece.target?.room === "string" && (b.rooms || []).includes(piece.target.room) ? piece.target.room : null;
+      const facts = buildingFacts(b, buildings, { room: askedRoom });
+      const languages = state.languages || ["en"];
+      const forbidden = axisNode.ending ? [] : bible?.forbidden_entities || [];
+      // no clue agent's words (no credit, the cap, a failed or refused answer): mid and near in
+      // plain words from the same facts, so the rings still narrow the search (Teko, 2026-10-23)
+      const plain = (why) => {
+        const pr = plainRings(facts, { languages, room: askedRoom });
+        const far = (accepted.find((d) => d.id === `${prefix}prox_${node}_far_r`)?.then || []).find((x) => x?.type === "diary_entry")?.text;
+        if (!pr || far === undefined) return { notes: [`${purpose}: ${why}: the story's rings stay`] };
+        let out = withRingTexts(accepted, node, { far, mid: pr.mid, near: pr.near }, prefix).directives;
+        const notes = [`${purpose}: ${why}: mid and near in plain words from ${b.id}`];
+        if (pr.room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
+          out = withPieceRoom(out, piece.id, pr.room);
+          notes.push(`${purpose}: ${piece.id} asked into the ${pr.room}, as the plain words say`);
+        }
+        return { notes, directives: out };
+      };
+      if ((await store.callsSince(nowSec - 86400)) >= maxCalls) return plain("daily AI call cap reached");
+      const spentNow = await store.costSince(nowSec - 86400);
+      if (spentNow >= maxUsd) return plain(`daily AI budget reached ($${spentNow.toFixed(2)} of $${maxUsd})`);
+      const context = buildContext({
+        task: "clues", state_version: state.state_version || 0,
+        // what the rings need of the story: the chapter and its piece, never the ending
+        bible: { title: bible?.title ?? null, forbidden_entities: forbidden,
+          chapter: { id: node, title: axisNode.chapter_title || axisNode.title || null, question: axisNode.question ?? null,
+            place: axisNode.place ?? axisNode.location_fn ?? null, what_happened: axisNode.what_happened ?? null,
+            piece: (axisNode.pieces || []).map((p) => ({ item: p.item, title: p.title ?? null, shows: p.shows ?? null }))[0] || null } },
+        state: { node, languages },
+        clues_for: {
+          rules: CLUES_PROMPT,
+          piece: { item: piece.item ?? null, title: piece.title ?? null, text: piece.text ?? null,
+            container: { room: piece.target?.room ?? null, container_pref: piece.target?.container_pref ?? null, on_floor: !!piece.target?.on_floor } },
+          solution: stageTexts(accepted, answer?.hints?.[node] || null),
+          story_rings: answer?.proximity ?? null,
+          building: facts.building, facts: facts.facts.map(({ id, about, distinctive }) => ({ id, about, distinctive })),
+          neighbour: facts.neighbour,
+        },
+      });
+      let res;
+      try {
+        res = await deps.askClues(deps.system, context, { role: "clues", task: "clues", models: state.models });
+      } catch (e) {
+        // a failed call is logged (and its cost counted) like any other; the chapter goes on
+        await logAnswer(store, deps.bibleKey, purpose, nowSec, null, e);
+        debug.push({ kind: "clues", error: e?.message, cost: e?.cost ?? null, raw: e?.raw ?? null });
+        return plain(`AI call failed (${String(e?.message || e).slice(0, 120)})`);
+      }
+      const g = cluesGate(res.doc, { facts: facts.facts, languages, room: askedRoom });
+      // the rewritten rings go through the same text gate as everything else (languages, forbidden names)
+      let out = null;
+      const errors = [...g.errors];
+      if (g.ok) {
+        const ringIds = new Set(["far", "mid", "near"].map((k) => `${prefix}prox_${node}_${k}_r`));
+        const rewritten = withRingTexts(accepted, node, g.texts, prefix).directives;
+        const tg = gateBatch(rewritten.filter((d) => ringIds.has(d.id)), { languages: state.languages, forbidden });
+        if (tg.rejected.length) errors.push(...tg.rejected.map((r) => `${r.id}: ${r.reason}`));
+        else out = rewritten;
+      }
+      await logAnswer(store, deps.bibleKey, purpose, nowSec,
+        { ...res, note: [res.note, out ? null : `refused by the clue gate: ${errors.join("; ")}`.slice(0, 250)].filter(Boolean).join("; ") || null });
+      debug.push({ kind: "clues", model: res.model, cost: res.cost, answer: res.doc, raw: res.raw ?? null, rejections: errors });
+      if (!out) return plain(`refused (${errors.slice(0, 3).join("; ")})`);
+      const notes = [`${purpose}: rings rewritten from ${b.id} (mid ${g.cited.mid.join(", ")}; near ${g.cited.near.join(", ")})`];
+      // the piece goes where the clues point: the room the near line names, when none was asked
+      if (g.room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
+        out = withPieceRoom(out, piece.id, g.room);
+        notes.push(`${purpose}: ${piece.id} asked into the ${g.room}, as the clues say`);
+      }
+      return { notes, directives: out };
+    }
+
     async function run(kind, movedEv, aheadNode = null) {
       const debug = [];   // every answer and what the gates said about it (DEBUG_ANSWERS, local runs only)
       let bible = sealed ? await open(deps.bibleKey, sealed) : null;
@@ -614,7 +698,8 @@ export function makeDecide(deps) {
         ? finalStageCells(index, state.catalog_cells, stagePts.near)
         : stageCells(stagePts, index.cell_size || 300);
       const points = writingFinal ? (stagePts.near.length ? stagePts.near : stagePts.towns) : [...stagePts.near, ...stagePts.towns];
-      let places = candidates(await loadCells(t, keys, state.catalog_cells), index.building_fields || [], points, 80);
+      const cellRows = await loadCells(t, keys, state.catalog_cells);
+      let places = candidates(cellRows, index.building_fields || [], points, 80);
       const spawns = spawnPoints(index);
       if (writingFinal) {
         places = places.filter((p) => isLouisville(p) || !inSpawnTown(p.id.split("_").slice(1).map(Number), spawns, SPAWN_EXCLUSION));
@@ -658,6 +743,31 @@ export function makeDecide(deps) {
       let answer = null;
       let ringsLater = null;   // { node, texts, prefix, ids }: rings drawn when the piece is placed
       // two writers: the story model designs the bible first, then the stage model fills node one
+      // a bible already paid for and checked, whose first chapter was refused: reuse it, never
+      // ask the story model again (production 2026-10-22: an Opus bible thrown away with its stage)
+      // no kept bible but one was answered and paid for in the last hours (an older bridge threw it
+      // away with its refused stage): read it back from the calls log
+      if (kind === "seed" && split && !state.pending_bible && typeof store.lastRaw === "function") {
+        try {
+          const sealedRaw = await store.lastRaw("bible#", nowSec - 6 * 3600);
+          const text = sealedRaw ? await open(deps.bibleKey, sealedRaw) : null;
+          const doc = text ? readAnswer(String(text)).doc : null;
+          const found = doc && (doc.bible || doc);
+          if (found && found.axis && !checkBible(found, index.story_max_nodes || 4).length) {
+            bible = found;
+            notes.push("bible recovered from the calls log (already paid for)");
+          }
+        } catch (_) { /* nothing to recover */ }
+      }
+      if (kind === "seed" && split && !bible && state.pending_bible) {
+        try {
+          const kept = await open(deps.bibleKey, state.pending_bible);
+          if (kept && !checkBible(kept, index.story_max_nodes || 4).length) {
+            bible = kept;
+            notes.push("bible reused (paid for in an earlier tick)");
+          }
+        } catch (_) { /* unreadable: write a new one */ }
+      }
       if (kind === "seed" && split) {
         rejections = failureNote(state, "bible");
         for (let round = 1; round <= MAX_ROUNDS && !bible; round++) {
@@ -869,9 +979,23 @@ export function makeDecide(deps) {
       // the world (the first two-writer rehearsal sealed a bible with nothing placed, 2026-10-14):
       // keep nothing, back off, try again later
       if (missing.length) {
-        // a stage written ahead is simply asked again later (never the current chapter's retry)
-        await store.setState({ last_rejections: rejections, ...(kind === "stage" && node && !aheadNode ? { stage_wanted: node } : {}) });
+        // a stage written ahead is simply asked again later (never the current chapter's retry);
+        // a seed whose bible is good keeps the bible for the retry, so only the stage is paid again
+        const keepBible = kind === "seed" && bible && !checkBible(bible, index.story_max_nodes || 4).length
+          ? { pending_bible: await seal(deps.bibleKey, bible) } : {};
+        await store.setState({ last_rejections: rejections, ...keepBible, ...(kind === "stage" && node && !aheadNode ? { stage_wanted: node } : {}) });
         return { note: `${kind} rejected: missing ${missing.join("; ")}`, rejections, debug, aiFailed: true };
+      }
+      // the clue agent (src/clues.js, Teko 2026-10-23): the stage passed, its piece has a building;
+      // one small call rewrites the rings from that building's real facts. Any failure keeps the
+      // story's own rings: never a reason to hold the chapter back
+      const ringAxis = kind === "seed" ? bible?.axis?.[0] : axisNode;
+      const ringPrefix = `${bible?.season || state.season || "s1"}_`;
+      if (ringAxis && typeof deps.askClues === "function" && ringsIn(accepted, ringAxis.id, ringPrefix)) {
+        const c = await runClues({ axisNode: ringAxis, prefix: ringPrefix, answer, accepted, bible,
+          buildings: buildingsOf(cellRows, index.building_fields || []), debug });
+        notes.push(...c.notes);
+        if (c.directives) accepted = c.directives;
       }
       // the extras of the closed chapters (docs/13 item 5): the AI's page score first, collab.js's
       // tally as the fallback; bridge-made, gated like the rest, never a reason to throw the stage
@@ -966,6 +1090,7 @@ export function makeDecide(deps) {
         ...(endNode ? { [endId]: { ...endTexts, title: endNode.chapter_title || endNode.title || null } } : {}) };
       if (kind === "seed") {
         await store.setBible(bible.season, await seal(deps.bibleKey, bible));
+        await store.setState({ pending_bible: null });
         // the next story: the past one archived, the mod told to open, the diaries told the new
         // first hint (new characters get it from hints.json; those who already have a diary
         // get it as an entry, on the spot), the story's own state clean

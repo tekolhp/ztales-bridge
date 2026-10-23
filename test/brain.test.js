@@ -86,7 +86,8 @@ test("the fixed instructions carry the rules, then the lore digest", async () =>
   // 54k: the stage checklist (2026-10-21) is worth its ~400 cached tokens
   // 56k: the watch task and the page score / extra chapter contract (docs/13 items 4-5, 2026-10-22),
   // ~500 cached tokens; the watch call itself sends a slim context, so it stays about $0.01
-  assert.ok(sys.length < 56000, `fixed prompt stays compact (${sys.length} chars)`);
+  // 57.5k: the clue agent's task (2026-10-23), ~300 cached tokens; its call sends one building's facts
+  assert.ok(sys.length < 58000, `fixed prompt stays compact (${sys.length} chars)`);
 });
 
 test("an answer cut at the token limit says so, with what it cost", async () => {
@@ -180,10 +181,10 @@ test("output caps per task, overridable; a one-writer seed gets bible and stage"
   const { maxTokensFor, MAX_TOKENS, tokenCaps } = await import("../src/brain.js");
   assert.ok(MAX_TOKENS.story < 32000);
   assert.equal(maxTokensFor({ role: "story", task: "bible" }), 12000);
-  assert.equal(maxTokensFor({ role: "stage", task: "stage" }), 8000);
+  assert.equal(maxTokensFor({ role: "stage", task: "stage" }), 16000);
   assert.equal(maxTokensFor({ role: "dream", task: "echo" }), 1500);
   assert.equal(maxTokensFor({ role: "watch", task: "watch" }), 2000);
-  assert.equal(maxTokensFor({ role: "stage", task: "seed" }), 20000);
+  assert.equal(maxTokensFor({ role: "stage", task: "seed" }), 28000);
   assert.equal(maxTokensFor({ role: "story" }, { story: 9000, stage: 0 }), 9000);
   assert.equal(maxTokensFor({ role: "story" }, tokenCaps({})), 12000);
   assert.equal(maxTokensFor({ role: "stage" }, tokenCaps({ AI_MAX_TOKENS_STAGE: "6000" })), 6000);

@@ -247,6 +247,22 @@ For each player, answer at most one `diary_entry` for that player, or nothing:
 - never coordinates, a building id, the piece's id, the ending or a forbidden name.
 Answer only `{ "directives": [ { "type": "diary_entry", "player", "kind": "hint" | "record", "text": {lang: text} } ] }`, at most 600 characters each.
 
+## The rings, from the real building (task `clues`, Teko 2026-10-23)
+
+Once a chapter's piece has a building, you rewrite its three ring lines. `clues_for` holds the
+piece (and the room or container it was asked into), what the chapter says (`solution`), the
+story writer's rings (`story_rings`: keep their voice, not their place), and the building's
+`facts`, each with an `id`, what it says, and `distinctive` (only this building has it).
+- `far`: the chapter's theme or feeling. `mid`: turns the reader toward the real kind of place
+  ("not a shop: a house"), citing a fact. `near`: a detail only this building has, citing a
+  distinctive fact (a room it has, its floors, its name). If the piece was asked into a room,
+  never name another room.
+- Each line stands alone, is remembered later (never "here, now"), at most 400 characters. Never
+  a coordinate, a direction, a distance, the piece itself or a forbidden name.
+Answer only `{ "far": {lang: text}, "mid": {...}, "near": {...}, "cites": { "mid": [ { "fact":
+"<id>" } ], "near": [ ... ] } }`. The bridge reads each line for the facts; if mid or near shows
+none, code writes them in plain words from the facts.
+
 ### What the bible must hold so the story can be followed
 
 The bible spells out, for every node:
@@ -539,8 +555,9 @@ the current node, `far`, `mid` and `near`, rising in intensity: a vague unease, 
 almost certainty. The bridge draws the rings around the building where the node's anchor piece
 really is; you only write the words.
 - The diary never writes on the spot. Every line you write for a player is written later, in a
-  gap of their play: when they come back on another real day, or when they have stood still for
-  a while. So write each reflection as something remembered afterwards, not felt in the moment:
+  gap of their play: when they come back on another real day, when the character wakes up, sits
+  down or reads, or after a calm stretch, never sooner than two in-game hours. So write each
+  reflection as something remembered afterwards, not felt in the moment:
   "I keep thinking about that laundromat", not "something is here".
 - Point back to the place by its kind (the laundromat, the church by the river, the second floor
   of the clinic), never by an address, a direction or a distance. It should make the player want

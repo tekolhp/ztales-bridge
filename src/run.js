@@ -84,6 +84,8 @@ export function aiDecide(env) {
   return makeDecide({
     ask: (system, context, opts) => ask(pick(cfg, opts), system, context),
     askStory: (system, context, opts) => ask(pick(storyCfg, opts), system, context),
+    // the clue agent (src/clues.js): the chapter model (models.js alias), its own token cap (role "clues")
+    askClues: (system, context, opts) => ask(pick(cfg, opts), system, context),
     system: composeSystem(BRAIN_MD, LORE_MD), bibleKey: env.BIBLE_KEY,
     maxCallsPerDay: Number(env.MAX_CALLS_PER_DAY || 48),
     maxUsdPerDay: Number(env.MAX_USD_PER_DAY || 1),
