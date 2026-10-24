@@ -16,21 +16,35 @@
  *
  * The gate is code (cluesGate): no ring names a room or the kind of place (proper names stay
  * allowed); mid shows one of the building's facts through its activity words, near a distinctive
- * one, in every language. Anything less, a failed call, or a spent budget: plain indirect lines
- * from the facts (plainRings). The ring ids never change, so a stage written twice adds nothing.
+ * one, in every language. Anything less, or a failed call: asked again, told what was wrong, at
+ * most three calls per chapter (src/story.js runClues); then the story's own rings stay. Plain
+ * indirect lines from the facts (plainRings, plainOpen) only when there is no AI credit (the day's
+ * cap or budget, or the provider's "no credit", Teko 2026-10-24). The ring ids never change, so a
+ * stage written twice adds nothing.
+ *
+ * A fourth, outer ring (Teko, 2026-10-24): `wide`, the faintest pull, mood and theme only, a little
+ * more than the opening's intuition and less than far. Only this agent writes it (the story writer
+ * keeps far, mid, near); its plain fallback has a plain wide line, and the story's far stands in
+ * when neither is there (src/proximity.js ringText).
  */
 import { rowToBuilding } from "./catalog.js";
+import { RINGS, STORY_RINGS, ringText } from "./proximity.js";
+
+/** Every ring's key, widest first: wide, far, mid, near. */
+const RING_KEYS = RINGS.map((r) => r.key);
 
 /** Short rules sent with the facts (docs/04, "Task clues", is the long form). */
-export const CLUES_PROMPT = "Rewrite the three ring lines (far, mid, near) for the building the piece is really in. "
+export const CLUES_PROMPT = "Rewrite the four ring lines (wide, far, mid, near) for the building the piece is really in. "
   + "Indirect: never say what the place is (no laundry, kitchen, garage, workshop, bar, house, shop...); suggest it through what "
   + "any person would smell, hear, feel or do there (starch, steam, folding; grease, rust, oil; alcohol, tobacco; the cold). "
-  + "far: the chapter's feeling. mid: turns the reader toward the real kind of place by what was done there. "
+  + "wide: the faintest pull, mood and theme only, a little more than open, less than far. far: the chapter's feeling. mid: turns the reader toward the real kind of place by what was done there. "
   + "near: what only a fact marked distinctive gives (its room's work and smells; a basement: the cold of the steps going down). "
   + "Proper names (the town, the nearest named place) are allowed. Never a coordinate, a direction, a distance, the piece itself, "
   + "or a forbidden name. "
   + "open: the intuition every character gets when the chapter opens: the same rules, softer than mid, no fact named, "
-  + "but at least one of the building's facts shown by what was done there. Answer only { far, mid, near, open, cites }.";
+  + "but at least one of the building's facts shown by what was done there. Answer only { wide, far, mid, near, open, cites }. "
+  + "The whole answer under 3000 characters: each line short, no commentary, nothing said twice; cites hold only fact ids. "
+  + "rejections, when there are any, say what your last answer got wrong: fix exactly that.";
 
 /** How long one ring line may be (each language). */
 export const CLUE_TEXT_MAX = 400;
@@ -377,12 +391,12 @@ const actsIn = (A, lang) => (!A ? [] : isEnglish(lang) ? A.en : isPt(lang) ? A.p
 const MID_KINDS = new Set(["room", "kind", "basement", "floors"]);
 
 /**
- * The code gate on a clue answer. answer: { far, mid, near, cites: { mid: [cite], near: [cite] } }
+ * The code gate on a clue answer. answer: { wide, far, mid, near, cites: { mid: [cite], near: [cite] } }
  * (or { proximity: {...}, cites }), a cite being { fact: "<id>", words: { lang: "the words used" } }.
  * opts: { facts, languages, room } (room: the room the piece was asked into, if any).
  *
  * Indirect rings (Teko, 2026-10-23): what the place is, never; what a person did or sensed there.
- *  1. far, mid and near each have a text in every language, at most CLUE_TEXT_MAX characters.
+ *  1. wide, far, mid and near each have a text in every language, at most CLUE_TEXT_MAX characters.
  *  2. No ring names a room or the kind of place, in any language (ROOM_WORDS, ROOM_PT, KIND_NAMES,
  *     plus the building's own room ids; a plural counts). Proper names (region, building name,
  *     neighbour) are taken out first, so "Riverside Laundromat" may stand.
@@ -393,14 +407,14 @@ const MID_KINDS = new Set(["room", "kind", "basement", "floors"]);
  *  5. When the piece was asked into a room, near evokes no other room of the building (an activity
  *     word both rooms share does not count).
  *
- * Returns { ok, texts: { far, mid, near }, cited: { mid: [ids], near: [ids] }, room: the room the
+ * Returns { ok, texts: { wide, far, mid, near }, cited: { mid: [ids], near: [ids] }, room: the room the
  * near line evokes (or null), errors: [] }.
  */
 export function cluesGate(answer, { facts = [], languages = ["en"], room = null } = {}) {
   const langs = Array.isArray(languages) && languages.length ? languages : ["en"];
   const errors = [];
   const src = answer && typeof answer === "object" ? (answer.proximity && typeof answer.proximity === "object" ? answer.proximity : answer) : {};
-  const texts = { far: src.far, mid: src.mid, near: src.near };
+  const texts = { wide: src.wide, far: src.far, mid: src.mid, near: src.near };
   const propers = facts.filter((f) => f.proper).flatMap((f) => f.words || []).map((w) => normalize(w).trim()).filter(Boolean)
     .sort((a, b) => b.length - a.length);
   // a ring's text in one language, normalized, the proper names taken out
@@ -412,7 +426,7 @@ export function cluesGate(answer, { facts = [], languages = ["en"], room = null 
     return n;
   };
   const names = placeNames(facts);
-  for (const k of ["far", "mid", "near"]) {
+  for (const k of RING_KEYS) {
     for (const l of langs) {
       const s = textIn(texts[k], l, langs);
       if (typeof s !== "string" || !s.trim()) { errors.push(`${k}: no text in ${l}`); continue; }
@@ -499,22 +513,27 @@ export function openGate(text, { facts = [], languages = ["en"] } = {}) {
   return { ok: errors.length === 0, text, cited, errors };
 }
 
-/** Each ring's diary line in `directives` (src/proximity.js ids) given new texts; ids unchanged. */
+/**
+ * Each ring's diary line in `directives` (src/proximity.js ids) given new texts; ids unchanged.
+ * A ring with no new text keeps its own (wide with none takes the new far, see ringText).
+ */
 export function withRingTexts(directives, node, texts, prefix = "") {
-  const ids = new Map(["far", "mid", "near"].map((k) => [`${prefix}prox_${node}_${k}_r`, k]));
+  const ids = new Map(RING_KEYS.map((k) => [`${prefix}prox_${node}_${k}_r`, k]));
   let changed = 0;
   const out = (directives || []).map((d) => {
     const k = d && ids.get(d.id);
     if (!k || !Array.isArray(d.then)) return d;
+    const text = ringText(texts, k);
+    if (text === undefined || text === null || text === "") return d;
     changed++;
-    return { ...d, then: d.then.map((x) => (x && x.type === "diary_entry" ? { ...x, text: texts[k] } : x)) };
+    return { ...d, then: d.then.map((x) => (x && x.type === "diary_entry" ? { ...x, text } : x)) };
   });
   return { directives: out, changed };
 }
 
-/** The ring reactions present in a batch (all three are needed to rewrite them). */
+/** The story's ring reactions present in a batch (far, mid, near are needed to rewrite them). */
 export function ringsIn(directives, node, prefix = "") {
-  const want = ["far", "mid", "near"].map((k) => `${prefix}prox_${node}_${k}_r`);
+  const want = STORY_RINGS.map((k) => `${prefix}prox_${node}_${k}_r`);
   return want.every((id) => (directives || []).some((d) => d?.id === id));
 }
 
@@ -566,7 +585,8 @@ export function withPieceRoom(directives, pieceId, room) {
 // mid and near rings still narrow the search (Teko, 2026-10-23), indirect like the agent's: mid by
 // what living or working in that kind of place was like, near by what the distinctive room smells
 // and sounds of, then where it lies from the nearest named place. Never the room's or the place's
-// name. The story's own far ring stays: it only sets the mood.
+// name. The story's own far ring stays: it only sets the mood. wide (Teko, 2026-10-24): a plain
+// faint pull, mood only.
 
 /** mid, from the kind of place: [en, pt]. */
 const PLAIN_MID = {
@@ -690,7 +710,7 @@ export function compass(ax, ay, bx, by) {
 }
 
 /**
- * { mid, near, room } from facts alone, in every language in use ("en" and "pt-br" written; any
+ * { wide, far, mid, near, room } from facts alone, in every language in use ("en" and "pt-br" written; any
  * other language gets the English line). facts: buildingFacts(...). room: the room the piece is
  * asked into. room in the answer: the room near evokes (the piece is asked into it), or null.
  */
@@ -713,9 +733,11 @@ export function plainRings(facts, { languages = ["en"], room = null } = {}) {
   const where = [dir ? ` ${cap(dir[0])} of ${n.name}.` : b.region ? ` Somewhere in ${b.region}.` : "",
     dir ? ` A ${dir[1]} de ${n.name}.` : b.region ? ` Em algum lugar de ${b.region}.` : ""];
   // far only stands in when the story's own far names the place (it must not, docs/04)
-  const en = { far: "Something about that place keeps coming back to me, the way a smell does.", mid: mid[0], near: `${line[0]}${where[0]} It is in there.` };
-  const pt = { far: "Alguma coisa daquele lugar volta pra mim, como um cheiro volta.", mid: mid[1], near: `${line[1]}${where[1]} Está lá dentro.` };
+  const en = { wide: "Somewhere around there, something tugged at me, too faint to follow, like a word I almost remembered.",
+    far: "Something about that place keeps coming back to me, the way a smell does.", mid: mid[0], near: `${line[0]}${where[0]} It is in there.` };
+  const pt = { wide: "Em algum lugar por ali, alguma coisa me puxou, fraca demais para seguir, como uma palavra que eu quase lembrei.",
+    far: "Alguma coisa daquele lugar volta pra mim, como um cheiro volta.", mid: mid[1], near: `${line[1]}${where[1]} Está lá dentro.` };
   const one = (k) => (languages.length <= 1 ? (/^pt/i.test(languages[0] || "") ? pt[k] : en[k])
     : Object.fromEntries(languages.map((l) => [l, /^pt/i.test(l) ? pt[k] : en[k]])));
-  return { far: one("far"), mid: one("mid"), near: one("near"), room: pick };
+  return { wide: one("wide"), far: one("far"), mid: one("mid"), near: one("near"), room: pick };
 }

@@ -14,7 +14,21 @@ export class BrainError extends Error {
     this.status = status;
     this.cost = cost;   // a call that answered but was unusable is still billed
     this.raw = raw;     // ...and its text is kept: a paid answer is never thrown away unread (Teko, 2026-10-22)
+    this.noCredit = false;   // the provider says the account has no credit (noCreditError)
   }
+}
+
+/**
+ * The provider saying the account has run out of credit (Teko, 2026-10-24: with the owner's daily
+ * caps, the only case where the bridge's plain no-AI lines may stand in). Anthropic answers HTTP 400
+ * "Your credit balance is too low to access the Anthropic API"; OpenRouter answers HTTP 402
+ * "Insufficient credits" (sometimes inside a 200, as the choice's error). Anything else is a failed
+ * or refused answer, never "no credit".
+ */
+export function noCreditError(status, message) {
+  if (Number(status) === 402) return true;
+  return /credit balance is too low|insufficient credits?|insufficient (account )?balance|insufficient_quota|out of credits?/i
+    .test(String(message || ""));
 }
 
 /**
@@ -24,8 +38,9 @@ export class BrainError extends Error {
  */
 // stage 16000: a first chapter with its pieces, rings and stall steps was cut at 8000 (production
 // 2026-10-22); the cap is a guard, not a target
-// clues 1500: the clue agent's three ring lines and their cites (src/clues.js, 2026-10-23)
-export const MAX_TOKENS = { story: 12000, stage: 16000, dream: 1500, watch: 2000, clues: 3000 };
+// clues 3000: the clue agent's four ring lines (wide, far, mid, near), the opening and their cites, asked
+// under 3000 characters (src/clues.js CLUES_PROMPT): the cap is a safety net, far above it
+export const MAX_TOKENS = { story: 12000, stage: 16000, dream: 1500, watch: 3500, clues: 3000 };
 
 /** The owner's caps, from the Worker vars AI_MAX_TOKENS_BIBLE / _STAGE / _ECHO / _WATCH / _CLUES (0: the default). */
 export function tokenCaps(env = {}) {
@@ -374,11 +389,21 @@ async function askOnce(cfg, system, context) {
   }
   if (!res.ok) {
     // the provider's own error message, trimmed; it never contains the key we sent
-    let detail = "";
-    try { detail = JSON.stringify((await res.json())?.error?.message ?? "").slice(0, 200); } catch { /* not JSON */ }
-    throw new BrainError(`${cfg.provider} answered ${res.status} ${detail}`, res.status);
+    let message = "";
+    try { message = String((await res.json())?.error?.message ?? ""); } catch { /* not JSON */ }
+    const err = new BrainError(`${cfg.provider} answered ${res.status} ${JSON.stringify(message).slice(0, 200)}`, res.status);
+    err.noCredit = noCreditError(res.status, message);
+    throw err;
   }
-  const out = p.read(await res.json());
+  const json = await res.json();
+  const out = p.read(json);
+  // OpenRouter may say "no credit" inside a 200 (the choice's or the body's error, code 402)
+  const inner = json?.choices?.[0]?.error ?? json?.error ?? null;
+  if (inner && typeof inner === "object" && noCreditError(inner.code, inner.message)) {
+    const err = new BrainError(`${cfg.provider} says no credit: ${String(inner.message || inner.code).slice(0, 200)}`, Number(inner.code) || 402);
+    err.noCredit = true;
+    throw err;
+  }
   const raw = typeof out.text === "string" ? out.text : null;
   // say why, and what it cost: a failed call is still paid for, and its text is kept
   const why = `finish ${out.finish ?? "?"}, ${out.usage.output} tokens out, $${out.cost ?? "?"}`;

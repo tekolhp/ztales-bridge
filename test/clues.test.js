@@ -76,7 +76,7 @@ function seedAnswer(proximity = PROX) {
 
 // every text a player reads, in every language (the gate refuses a plain string with two)
 function inAll(v, langs, key = null) {
-  if (typeof v === "string" && ["text", "title", "far", "mid", "near"].includes(key)) return Object.fromEntries(langs.map((l) => [l, v]));
+  if (typeof v === "string" && ["text", "title", "wide", "far", "mid", "near"].includes(key)) return Object.fromEntries(langs.map((l) => [l, v]));
   if (Array.isArray(v)) return v.map((x) => inAll(x, langs));
   if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === "bible" ? x : inAll(x, langs, k)]));
   return v;
@@ -84,13 +84,17 @@ function inAll(v, langs, key = null) {
 
 // indirect (Teko, 2026-10-23): never the room's or the place's name, only what was done and sensed there
 const GOOD = {
+  wide: "Clean shirts on my mind all day, folded and waiting for someone.",
   far: "A ticket for clean shirts nobody came back for.",
   mid: "Someone lived there and pressed their own whites by hand.",
   near: "Warm starch and the spin of the drum, the smell of soap on everything.",
+  open: "My hands keep smoothing warm cotton that is not there, as if a basket waited for me.",
   cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "room:laundry" }] },
 };
 
-async function seed({ clue, maxUsdPerDay, languages } = {}) {
+// `clue`: one answer for every call, or a list taken in order (the last repeats); an Error is thrown,
+// an object { cut: answer } comes back marked as cut at the token limit
+async function seed({ clue, maxUsdPerDay, maxCallsPerDay, languages } = {}) {
   const t = new MemoryTransport(catalogFiles(languages));
   const store = new MemoryStore();
   const calls = [];
@@ -102,20 +106,25 @@ async function seed({ clue, maxUsdPerDay, languages } = {}) {
   };
   const askClues = clue === undefined ? undefined : async (system, context, opts) => {
     clueCalls.push({ context: JSON.parse(context), opts });
-    if (clue instanceof Error) throw clue;
-    return { doc: structuredClone(clue), model: "fake-haiku", cost: 0.002, raw: JSON.stringify(clue) };
+    const c = Array.isArray(clue) ? clue[Math.min(clueCalls.length - 1, clue.length - 1)] : clue;
+    if (c instanceof Error) throw c;
+    if (c && c.cut) return { doc: structuredClone(c.cut), model: "fake-haiku", cost: 0.002, raw: JSON.stringify(c.cut), repaired: true,
+      note: "cut at the token limit, repaired (finish length, 3000 tokens out, $0.002)" };
+    return { doc: structuredClone(c), model: "fake-haiku", cost: 0.002, raw: JSON.stringify(c) };
   };
-  const decide = makeDecide({ ask, askClues, system: "SYSTEM", bibleKey: KEY, ...(maxUsdPerDay ? { maxUsdPerDay } : {}) });
+  const decide = makeDecide({ ask, askClues, system: "SYSTEM", bibleKey: KEY, ...(maxUsdPerDay ? { maxUsdPerDay } : {}),
+    ...(maxCallsPerDay ? { maxCallsPerDay } : {}) });
   const r = await tick({ t, store, nowSec: T0, decide });
   const pushed = [...t.files.keys()].find((k) => k.startsWith("inbox/directives-"));
   const sent = pushed ? JSON.parse(t.files.get(pushed)).directives : [];
   return { t, store, r, sent, calls, clueCalls };
 }
 
+const PLAIN_WIDE = "Somewhere around there, something tugged at me, too faint to follow, like a word I almost remembered.";
 const ringText = (sent, k) => sent.find((d) => d.id === `s1_prox_n1_${k}_r`)?.then?.[0]?.text;
 const pieceOf = (sent) => sent.find((d) => d.id === "s_ticket");
 
-test("clues: a good answer rewrites the three rings and asks the piece into the room the clues name", async () => {
+test("clues: a good answer rewrites the four rings and asks the piece into the room the clues name", async () => {
   const { sent, store, clueCalls, r } = await seed({ clue: GOOD });
   assert.equal(clueCalls.length, 1, "one call, no more");
   assert.equal(clueCalls[0].opts.role, "clues");
@@ -128,6 +137,7 @@ test("clues: a good answer rewrites the three rings and asks the piece into the 
   assert.ok(ctx.clues_for.solution.some((x) => /own laundry room/.test(x.text)), "the piece's own text is passed");
   assert.ok(ctx.clues_for.solution.some((x) => /stall 2/.test(x.where)), "and the stall hints");
   assert.ok(!JSON.stringify(ctx).includes("never collected"), "never the ending");
+  assert.equal(ringText(sent, "wide"), GOOD.wide, "wide comes from the clue agent");
   assert.equal(ringText(sent, "far"), GOOD.far);
   assert.equal(ringText(sent, "mid"), GOOD.mid);
   assert.equal(ringText(sent, "near"), GOOD.near);
@@ -147,56 +157,156 @@ test("clues: the call is logged as clues#<node> and its cost counts against the 
   assert.ok(Math.abs((await store.costSince(T0 - 10)) - 0.012) < 1e-9, "stage + clues");
 });
 
-test("clues: an answer that fails the gate gives plain rings from the facts (logged, cost counted)", async () => {
-  // near cites only the kind of place, which every house has: not distinctive
-  const weak = { ...GOOD, near: "Someone lived there. They cooked there.", cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "kind:home" }] } };
-  const { sent, store, r, clueCalls } = await seed({ clue: weak });
-  assert.equal(clueCalls.length, 1, "never asked again blindly");
-  assert.equal(ringText(sent, "far"), "Something about that place keeps coming back to me, the way a smell does.", "a far that names the place gives way to the plain one");
-  assert.equal(ringText(sent, "mid"), "Someone lived there, cooked there, kept their own things in order.");
-  assert.equal(ringText(sent, "near"), "Warm cotton, starch, the drum still turning in my head. Northwest of Riverside Laundromat. It is in there.");
-  assert.equal(pieceOf(sent).target.room, "laundry", "the piece goes where the plain words point");
-  const log = store.callLog.find((c) => c.purpose === "clues#n1");
-  assert.equal(log.cost_usd, 0.002);
-  assert.match(log.note, /clue gate.*near: shows nothing only this building has/);
+// near cites only the kind of place, which every house has: not distinctive
+const WEAK = { ...GOOD, near: "Someone lived there. They cooked there.", cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "kind:home" }] } };
+const PLAIN_MID = "Someone lived there, cooked there, kept their own things in order.";
+const reasonsOf = (call) => (call.context.rejections || []).map((r) => r.reason).join(" | ");
+
+test("clues: a refused answer is asked again with the gate's errors; the good second answer is used", async () => {
+  const { sent, store, r, clueCalls } = await seed({ clue: [WEAK, GOOD] });
+  assert.equal(clueCalls.length, 2, "one retry, then good");
+  assert.deepEqual(clueCalls[0].context.rejections, [], "the first call has nothing to fix");
+  const why = reasonsOf(clueCalls[1]);
+  assert.match(why, /refused by the clue gate/);
+  assert.match(why, /near: shows nothing only this building has/, "told exactly what was wrong");
+  assert.match(clueCalls[1].context.clues_for.rules, /wide and open already passed and are kept; only far, mid and near will be used/);
+  assert.equal(ringText(sent, "near"), GOOD.near);
+  assert.equal(ringText(sent, "mid"), GOOD.mid);
+  assert.equal(ringText(sent, "wide"), GOOD.wide, "the good wide of the first answer is kept");
+  assert.equal(pieceOf(sent).target.room, "laundry");
+  const first = store.callLog.find((c) => c.purpose === "clues#n1");
+  const second = store.callLog.find((c) => c.purpose === "clues#n1.retry1");
+  assert.equal(first.cost_usd, 0.002);
+  assert.match(first.note, /clue gate.*near: shows nothing only this building has/);
+  assert.equal(second.cost_usd, 0.002, "every call logged with its cost");
+  assert.equal(second.ok, true);
   assert.match(r.notes.join(" "), /clues#n1: refused/);
-  assert.equal((await store.getState()).stage_written, "n1", "the chapter went out");
+  assert.match(r.notes.join(" "), /clues#n1.retry1: rings rewritten from b_10600_9600/);
+  assert.equal((await store.getState()).clue_tries.s1_n1.n, 2, "the calls are counted in state");
+});
+
+test("clues: an answer cut at the token limit is asked again, told to answer shorter", async () => {
+  const { near, ...noNear } = GOOD;
+  void near;
+  const { sent, clueCalls } = await seed({ clue: [{ cut: noNear }, GOOD] });
+  assert.equal(clueCalls.length, 2);
+  assert.match(reasonsOf(clueCalls[1]), /your answer was cut at the token limit: answer shorter/);
+  assert.match(reasonsOf(clueCalls[1]), /near: no text in en/);
+  assert.equal(ringText(sent, "near"), GOOD.near);
+  // a cut answer that could not be read at all: the same note
+  const thrown = await seed({ clue: [new BrainError("answer cut at the token limit (finish length, 3000 tokens out, $0.004)", null, 0.004, "{\"wi"), GOOD] });
+  assert.equal(thrown.clueCalls.length, 2);
+  assert.match(reasonsOf(thrown.clueCalls[1]), /your answer was cut at the token limit: answer shorter/);
+  assert.equal(ringText(thrown.sent, "near"), GOOD.near);
+  assert.equal(thrown.store.callLog.find((c) => c.purpose === "clues#n1").cost_usd, 0.004, "the cut call is paid for and logged");
+});
+
+test("clues: an unreadable answer is asked again with the parse error", async () => {
+  const { clueCalls, sent } = await seed({ clue: [new BrainError("answer is not valid JSON: Unexpected token (finish stop)", 0, 0.003, "{oops"), GOOD] });
+  assert.equal(clueCalls.length, 2);
+  assert.match(reasonsOf(clueCalls[1]), /could not be read \(answer is not valid JSON: Unexpected token/);
+  assert.equal(ringText(sent, "mid"), GOOD.mid);
+});
+
+test("clues: three failures keep the story's own rings, never the plain lines; every call logged", async () => {
+  const { sent, store, r, clueCalls } = await seed({ clue: [WEAK, new BrainError("answer is not valid JSON", 0, 0.003, "{oops"), new TypeError("boom")] });
+  assert.equal(clueCalls.length, 3, "the first call and two retries, no more");
+  assert.equal(ringText(sent, "far"), PROX.far, "the story writer's far");
+  assert.equal(ringText(sent, "mid"), PROX.mid);
+  assert.equal(ringText(sent, "near"), PROX.near);
+  assert.notEqual(ringText(sent, "mid"), PLAIN_MID, "not the plain words");
+  assert.equal(ringText(sent, "wide"), GOOD.wide, "the good wide of the first answer is not thrown away");
+  assert.deepEqual(store.callLog.filter((c) => c.purpose.startsWith("clues#n1")).map((c) => [c.purpose, c.cost_usd, c.ok]),
+    [["clues#n1", 0.002, true], ["clues#n1.retry1", 0.003, false], ["clues#n1.retry2", null, false]]);
+  assert.match(r.notes.join(" "), /clues#n1: the story's rings stay/);
+  const s = await store.getState();
+  assert.equal(s.stage_written, "n1", "the chapter went out");
+  assert.equal(s.ai_failures, 0, "no back-off for the chapter");
+  assert.equal(s.clue_tries.s1_n1.n, 3);
+});
+
+test("clues: an agent that never writes wide: wide takes the story's far, or the agent's far when the story's names the place", async () => {
+  const { wide, ...noWide } = GOOD;
+  void wide;
+  const { sent, store, clueCalls } = await seed({ clue: noWide });
+  assert.equal(clueCalls.length, 3, "wide asked for twice more");
+  assert.match(clueCalls[1].context.clues_for.rules, /only wide will be used/);
+  assert.match(reasonsOf(clueCalls[1]), /wide: no text in en/);
+  assert.equal(ringText(sent, "mid"), GOOD.mid, "the good rings are kept, not thrown away");
+  assert.equal(ringText(sent, "near"), GOOD.near);
+  assert.equal(ringText(sent, "wide"), GOOD.far, "the story's far names the laundromat: the agent's far stands in");
+  assert.notEqual(ringText(sent, "wide"), PLAIN_WIDE);
+  assert.match(store.callLog.find((c) => c.purpose === "clues#n1").note, /wide: no text in en/);
+  const named = cluesGate({ ...GOOD, wide: "Something about that laundromat." }, { facts, languages: ["en"] });
+  assert.ok(named.errors.includes('wide: names the place ("laundromat") in en'), named.errors.join("; "));
+  const long = cluesGate({ ...GOOD, wide: "x".repeat(401) }, { facts, languages: ["en"] });
+  assert.ok(long.errors.includes("wide: longer than 400 characters in en"));
+});
+
+test("clues: wide missing at first, written on the retry: only wide is asked, the rest kept", async () => {
+  const { wide, ...noWide } = GOOD;
+  void wide;
+  const { sent, clueCalls } = await seed({ clue: [noWide, { wide: "A pull of clean cloth and someone waiting." }] });
+  assert.equal(clueCalls.length, 2);
+  assert.equal(ringText(sent, "wide"), "A pull of clean cloth and someone waiting.");
+  assert.equal(ringText(sent, "near"), GOOD.near);
 });
 
 test("clues: a cite the text does not show, or a fact never given, is refused", async () => {
   const lie = { ...GOOD, near: "The pool. The deep end.", cites: { mid: [{ fact: "kind:home" }], near: [{ fact: "room:laundry" }, { fact: "room:pool" }] } };
-  const { sent, store } = await seed({ clue: lie });
-  assert.notEqual(ringText(sent, "near"), PROX.near);
+  const { sent, store } = await seed({ clue: [lie, GOOD] });
+  assert.equal(ringText(sent, "near"), GOOD.near);
   assert.match(store.callLog.find((c) => c.purpose === "clues#n1").note, /room:pool, a fact it was not given/);
 });
 
-test("clues: a failed call gives plain rings and never fails the stage", async () => {
-  const { sent, store, r } = await seed({ clue: new BrainError("answer is not valid JSON", 0, 0.003, "{oops") });
-  assert.equal(ringText(sent, "mid"), "Someone lived there, cooked there, kept their own things in order.");
-  const log = store.callLog.find((c) => c.purpose === "clues#n1");
-  assert.equal(log.ok, false);
-  assert.equal(log.cost_usd, 0.003, "a failed call is still paid for");
-  const s = await store.getState();
-  assert.equal(s.stage_written, "n1");
-  assert.equal(s.ai_failures, 0, "no back-off for the chapter");
-  assert.match(r.notes.join(" "), /clues#n1: AI call failed/);
-});
-
-test("clues: any thrown error, not only the provider's, falls back", async () => {
-  const { sent } = await seed({ clue: new TypeError("boom") });
-  assert.match(ringText(sent, "near"), /It is in there\.$/);
-});
-
-test("clues: the daily budget reached, no call is made", async () => {
+test("clues: the daily budget reached, no call is made: no credit, the plain words", async () => {
   const { sent, clueCalls, r } = await seed({ clue: GOOD, maxUsdPerDay: 0.01 });
   assert.equal(clueCalls.length, 0);
-  assert.match(ringText(sent, "near"), /It is in there\.$/, "no credit: plain words, still pointing the way");
+  assert.equal(ringText(sent, "far"), "Something about that place keeps coming back to me, the way a smell does.", "a far that names the place gives way to the plain one");
+  assert.equal(ringText(sent, "wide"), PLAIN_WIDE);
+  assert.equal(ringText(sent, "mid"), PLAIN_MID);
+  assert.equal(ringText(sent, "near"), "Warm cotton, starch, the drum still turning in my head. Northwest of Riverside Laundromat. It is in there.");
+  assert.equal(pieceOf(sent).target.room, "laundry", "the piece goes where the plain words point");
   assert.match(r.notes.join(" "), /clues#n1: daily AI budget reached/);
 });
 
-test("clues: without a clue agent (rehearsal, tests) nothing changes", async () => {
+test("clues: the daily call cap reached mid-way is no credit too: plain words for what is missing", async () => {
+  // the seed's stage is call 1, the clue agent's first answer call 2: the cap of 2 stops the retry
+  const { sent, clueCalls, r } = await seed({ clue: [WEAK, GOOD], maxCallsPerDay: 2 });
+  assert.equal(clueCalls.length, 1);
+  assert.equal(ringText(sent, "mid"), PLAIN_MID);
+  assert.equal(ringText(sent, "wide"), GOOD.wide, "the agent's good wide is kept");
+  assert.match(r.notes.join(" "), /clues#n1: daily AI call cap reached: no AI credit/);
+});
+
+test("clues: the provider saying the account has no credit gives the plain words at once", async () => {
+  const e = new BrainError('anthropic answered 400 "Your credit balance is too low to access the Anthropic API."', 400);
+  e.noCredit = true;
+  const { sent, clueCalls, store, r } = await seed({ clue: [e, GOOD] });
+  assert.equal(clueCalls.length, 1, "never retried: there is no credit");
+  assert.equal(ringText(sent, "mid"), PLAIN_MID);
+  assert.equal(ringText(sent, "wide"), PLAIN_WIDE);
+  assert.equal(store.callLog.find((c) => c.purpose === "clues#n1").ok, false, "the call is logged");
+  assert.match(r.notes.join(" "), /the provider says the account has no credit/);
+});
+
+test("clues: a failed or refused answer never gives plain words (only no credit does)", async () => {
+  const { sent } = await seed({ clue: new TypeError("boom") });
+  assert.equal(ringText(sent, "near"), PROX.near);
+  assert.ok(!/It is in there/.test(ringText(sent, "near")));
+});
+
+test("clues: without a clue agent (rehearsal, tests) nothing changes; the story's far stands in for wide", async () => {
   const { sent } = await seed();
   assert.equal(ringText(sent, "near"), PROX.near);
+  assert.equal(ringText(sent, "wide"), PROX.far);
+});
+
+test("rings: no wide text given, wide takes the far given (the last resort)", async () => {
+  // a far written before the clue agent existed, with no wide anywhere: withRingTexts leaves it
+  const dirs = [{ id: "s1_prox_n1_wide_r", type: "reaction", then: [{ type: "diary_entry", text: "old" }] }];
+  const out = withRingTexts(dirs, "n1", { far: "the story's far", mid: "m", near: "n" }, "s1_").directives;
+  assert.equal(out[0].then[0].text, "the story's far");
 });
 
 test("clues: ids unchanged, so a stage written twice adds nothing", async () => {
@@ -204,7 +314,8 @@ test("clues: ids unchanged, so a stage written twice adds nothing", async () => 
   const b = await seed();
   assert.deepEqual(a.sent.map((d) => d.id).sort(), b.sent.map((d) => d.id).sort());
   // the rewritten rings sent again are duplicates the gate drops
-  const again = withRingTexts(b.sent, "n1", { far: "x", mid: "y", near: "z" }, "s1_").directives.filter((d) => /prox_/.test(d.id));
+  const again = withRingTexts(b.sent, "n1", { wide: "w", far: "x", mid: "y", near: "z" }, "s1_").directives.filter((d) => /prox_/.test(d.id));
+  assert.equal(again.filter((d) => d.type === "define_zone").length, 4, "four rings");
   const g = gateBatch(again, { pushedIds: new Set(a.sent.map((d) => d.id)) });
   assert.equal(g.accepted.length, 0);
   assert.equal(g.rejected.length, again.length);
@@ -212,6 +323,7 @@ test("clues: ids unchanged, so a stage written twice adds nothing", async () => 
 
 test("clues: two languages, each line shows its facts in each by what was done there", async () => {
   const two = {
+    wide: { en: "Clean shirts on my mind.", "pt-br": "Camisas limpas na cabeça." },
     far: { en: "A ticket for clean shirts.", "pt-br": "Um tíquete de camisas limpas." },
     mid: { en: "Someone lived there and pressed their own whites by hand.", "pt-br": "Alguém morava ali e passava a própria roupa branca à mão." },
     near: { en: "Warm starch, the drum spinning, the smell of soap.", "pt-br": "Goma morna, o tambor girando, o cheiro de sabão." },
@@ -219,6 +331,7 @@ test("clues: two languages, each line shows its facts in each by what was done t
   };
   const { sent } = await seed({ clue: two, languages: ["en", "pt-br"] });
   assert.deepEqual(ringText(sent, "near"), two.near);
+  assert.deepEqual(ringText(sent, "wide"), two.wide);
 });
 
 // ---------------------------------------------------------------- the gate itself
@@ -244,7 +357,7 @@ test("gate: naming the room or the kind of place is refused in any ring; proper 
   assert.ok(g.errors.includes('near: names the place ("laundromat") in en'), g.errors.join("; "));
   const h = cluesGate({ ...GOOD, far: "A house by the river." }, { facts, languages: ["en"] });
   assert.ok(h.errors.includes('far: names the place ("house") in en'));
-  const k = cluesGate({ ...GOOD, mid: { en: GOOD.mid, "pt-br": "Alguém morava naquela casa." }, far: { en: GOOD.far, "pt-br": "Um tíquete." },
+  const k = cluesGate({ ...GOOD, wide: { en: GOOD.wide, "pt-br": "Camisas." }, mid: { en: GOOD.mid, "pt-br": "Alguém morava naquela casa." }, far: { en: GOOD.far, "pt-br": "Um tíquete." },
     near: { en: GOOD.near, "pt-br": "A goma, o tambor girando." } }, { facts, languages: ["en", "pt-br"] });
   assert.ok(k.errors.includes('mid: names the place ("casa") in pt-br'), k.errors.join("; "));
   // the neighbour's own name holds a place word: a proper name, allowed
@@ -258,11 +371,11 @@ test("gate: naming the room or the kind of place is refused in any ring; proper 
 
 test("gate: every language shows the fact by its own activity words; a missing language fails", () => {
   const near = { en: "The cold of the steps going down.", "pt-br": "O frio dos degraus descendo." };
-  const ok = cluesGate({ far: { en: "a", "pt-br": "a" }, mid: { en: "Someone lived there, in Riverside.", "pt-br": "Alguém morava ali, em Riverside." }, near },
+  const ok = cluesGate({ wide: { en: "a", "pt-br": "a" }, far: { en: "a", "pt-br": "a" }, mid: { en: "Someone lived there, in Riverside.", "pt-br": "Alguém morava ali, em Riverside." }, near },
     { facts, languages: ["en", "pt-br"] });
   assert.equal(ok.ok, true, ok.errors.join("; "));
   assert.deepEqual(ok.cited.near, ["basement"]);
-  const miss = cluesGate({ far: { en: "a" }, mid: { en: "Riverside", "pt-br": "a cidade" }, near }, { facts, languages: ["en", "pt-br"] });
+  const miss = cluesGate({ wide: { en: "a", "pt-br": "a" }, far: { en: "a" }, mid: { en: "Riverside", "pt-br": "a cidade" }, near }, { facts, languages: ["en", "pt-br"] });
   assert.equal(miss.ok, false);
   assert.ok(miss.errors.includes("far: no text in pt-br"));
   assert.ok(miss.errors.includes("mid: shows none of the building's facts"), "a proper name alone does not turn the reader");
@@ -309,6 +422,8 @@ test("clues: plain rings, both languages, a compass from the nearest named place
   assert.equal(r.near["pt-br"], "Algodão morno, goma, o tambor girando na minha cabeça. A leste de Riverside Country Club. Está lá dentro.");
   assert.equal(r.mid.en, "Someone lived there, cooked there, kept their own things in order.");
   assert.equal(r.mid["pt-br"], "Alguém morava ali, cozinhava ali, cuidava das próprias coisas.");
+  assert.equal(r.wide.en, PLAIN_WIDE);
+  assert.equal(r.wide["pt-br"], "Em algum lugar por ali, alguma coisa me puxou, fraca demais para seguir, como uma palavra que eu quase lembrei.");
   const alone = plainRings({ ...facts, neighbour: null }, { languages: ["en"] });
   assert.equal(alone.near, "Warm cotton, starch, the drum still turning in my head. Somewhere in Riverside. It is in there.");
   // catalog aliases share a room's line: the cold for a butcher, the hum of a projector for a home cinema
@@ -335,7 +450,7 @@ test("plain rings: every room's line passes the clue gate itself, in both langua
     for (const languages of [["en"], ["pt-br"], ["en", "pt-br"]]) {
       const r = plainRings(facts, { languages, room });
       assert.equal(r.room, room);
-      const g = cluesGate({ far: languages.length > 1 ? { en: "Clean shirts.", "pt-br": "Camisas limpas." } : "Clean shirts.", mid: r.mid, near: r.near },
+      const g = cluesGate({ wide: r.wide, far: languages.length > 1 ? { en: "Clean shirts.", "pt-br": "Camisas limpas." } : "Clean shirts.", mid: r.mid, near: r.near },
         { facts: fs, languages, room });
       assert.equal(g.ok, true, `${room} ${languages}: ${g.errors.join("; ")} | ${JSON.stringify(r.near)}`);
       assert.ok(g.cited.near.includes(`room:${room}`), `${room}: near shows its own room`);
@@ -351,7 +466,7 @@ test("plain rings: no distinctive room with a line, a distinctive basement speak
   const r = plainRings({ building: { id: "b_1_1", region: "Muldraugh" }, facts: fs }, { languages: ["en"] });
   assert.equal(r.room, null);
   assert.equal(r.near, "The cold of the steps going down, the dark under the floor. Somewhere in Muldraugh. It is in there.");
-  const g = cluesGate({ far: "x", mid: r.mid, near: r.near }, { facts: fs, languages: ["en"] });
+  const g = cluesGate({ wide: r.wide, far: "x", mid: r.mid, near: r.near }, { facts: fs, languages: ["en"] });
   assert.equal(g.ok, true, g.errors.join("; "));
 });
 
@@ -363,6 +478,7 @@ test("clues gate: the live Haiku answer of 2026-10-23 names the place and is ref
     { id: "region:Riverside", kind: "region", words: ["Riverside"], proper: true, distinctive: false },
   ];
   const live = {
+    wide: { en: "Clean shirts.", "pt-br": "Camisas limpas." },
     far: { en: "I keep thinking about that laundry, the hot starch still hanging in the air.", "pt-br": "Não paro de pensar naquela lavanderia, a goma quente ainda no ar." },
     mid: { en: "Not a laundromat after all, I think. A house with a laundry room of its own.", "pt-br": "Não era lavanderia de bairro, acho. Uma casa com lavanderia própria." },
     near: { en: "Past the washing, the stairs go down to a basement, and something down there is still waiting.", "pt-br": "Depois da roupa, a escada desce até um porão, e algo lá embaixo ainda espera o dono." },
@@ -374,6 +490,7 @@ test("clues gate: the live Haiku answer of 2026-10-23 names the place and is ref
     'mid: names the place ("laundry") in en', 'mid: names the place ("lavanderia") in pt-br',
     'near: names the place ("basement") in en', 'near: names the place ("porao") in pt-br']) assert.ok(bad.errors.includes(e), `${e} | ${bad.errors.join("; ")}`);
   const indirect = {
+    wide: { en: "Clean shirts, and nobody to wear them.", "pt-br": "Camisas limpas, e ninguém para vesti-las." },
     far: { en: "I keep thinking about the hot starch still hanging in the air.", "pt-br": "Não paro de pensar na goma quente ainda no ar." },
     mid: { en: "Not a place where strangers queued with their bags. Someone pressed their own whites there, by hand.",
       "pt-br": "Não era lugar de estranhos com sacolas. Alguém passava a própria roupa branca ali, à mão." },

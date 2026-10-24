@@ -246,11 +246,11 @@ For each player, answer at most one `diary_entry` for that player, or nothing:
   grows (0-1: a feeling; 2: what was done there; 3: the kind of place; 4: it and what to look for);
 - or a short **record of their stretch** (`"kind": "record"`), when nothing fits;
 - never coordinates, a building id, the piece's id, the ending or a forbidden name.
-Answer only `{ "directives": [ { "type": "diary_entry", "player", "kind": "hint" | "record", "text": {lang: text} } ] }`, at most 600 characters each.
+Answer only `{ "directives": [ { "type": "diary_entry", "player", "kind": "hint" | "record", "text": {lang: text} } ] }`, at most 600 characters each; the whole answer under 6000 characters.
 
 ## The rings, from the real building (task `clues`, Teko 2026-10-23)
 
-Once a chapter's piece has a building, you rewrite its three ring lines. `clues_for` holds the
+Once a chapter's piece has a building, you rewrite its four ring lines. `clues_for` holds the
 piece (and its room or container), what the chapter says (`solution`), the story writer's rings
 (`story_rings`: keep their voice, not their place), and the building's `facts` (`id`, what it
 says, `distinctive`: only this building has it).
@@ -258,15 +258,17 @@ says, `distinctive`: only this building has it).
   Suggest it by what a person would smell, hear, feel or do there: starch, steam for a laundry
   room; grease, rust for a garage; alcohol, tobacco for a bar; the cold for a meat locker.
   Proper names (town, neighbour) are fine.
-- `far`: the chapter's feeling. `mid`: turns the reader toward the real kind of place by what was
+- `wide` (outermost): the faintest pull, mood and theme only, more than `open`, less than `far`.
+  `far`: the chapter's feeling. `mid`: turns the reader toward the real kind of place by what was
   done there ("someone pressed their own whites by hand"). `near`: what only a distinctive fact
   gives ("the cold of the steps going down"). Piece asked into a room: never evoke another room.
 - `open`: the intuition every character gets when the chapter opens; same rules, softer than
   mid, at least one fact shown by what was done there.
 - Each line stands alone, remembered later, at most 400 characters. Never a coordinate, a
   direction, a distance, the piece itself or a forbidden name.
-Answer only `{ "far": {lang: text}, "mid", "near", "open", "cites": { "mid": [ { "fact": "<id>" } ],
-"near": [ ... ] } }`. A place name, or a line showing no fact, refuses it; code writes plain lines.
+Answer only `{ "wide": {lang: text}, "far", "mid", "near", "open", "cites": { "mid": [ { "fact": "<id>" } ],
+"near": [ ... ] } }`, all of it under 3000 characters. A place name, or a line showing no fact, refuses
+that part; you are asked again (twice at most) with `rejections` saying what was wrong: fix exactly that.
 
 ### What the bible must hold so the story can be followed
 
@@ -327,7 +329,7 @@ never tell. Here the *place* is told. When you write the final stage, the contex
 `finale.where`: the nightmare, a diary page the finder of any last-node piece gets on the spot,
 in their character's voice, dreamlike and dark, built from the whole story so it makes sense of
 it in one stroke, and naming the place so it can only mean one building (the landmark's name,
-or the region and the kind of place together). The bridge refuses it when it does not name the
+or the region and the kind of place together), at most 2000 characters. The bridge refuses it when it does not name the
 place. Nothing else tells it: the chat only sends the finder to the diary (Teko, 2026-10-21).
 On the last node you may finally say what `forbidden_entities` kept hidden.
 
@@ -336,7 +338,7 @@ something screams, the weather turns, then one wave of the dead per node, about 
 apart, each taking one piece from the urn, then silence and the urn opens. You give, in the
 final stage's answer, the four lines the script says (`finale.lines`: `hush`, `scream`,
 `last_wave`, `silence`, 240 characters each), `finale.epilogue` (every language, at most 1200
-characters), optionally `finale.vanish` (one line per piece,
+characters), optionally `finale.vanish` (one line per piece, 240 characters,
 by its `story_id`, read by everyone as the urn takes that piece: what its loss feels like, never
 "a piece was consumed") and `finale.weather` (storm, fog, rain, none). The horde's size and
 the waves' pace are the server's, not yours.
@@ -377,7 +379,7 @@ kind of help this story's people would have left behind: `weapons`, `food`, `med
 of that kind, some of the rest, a touch of clothing; leave it out and it is drawn. No item list
 is written here (Teko, 2026-10-21). It appears only when the event ends; the pieces inside are consumed.
 
-**A story feeds the people who follow it.** A node may list `supplies` (up to three entries
+**A story feeds the people who follow it.** A node may list `supplies` (up to three entries, `count` 1 to 8,
 from `catalog.rewards`): the house with food, the gun in the drawer, the medicine on the shelf,
 placed in that node's building with `place_item` and no `story_id`. Not pieces: no reaction
 answers them.
@@ -423,7 +425,7 @@ sent back to you, and every round costs the server owner money. Follow the shape
   any other item must be one of `catalog.rewards`.
 - **Every text a player reads** (`text`, `title`, `prompt`, `epilogue`, `server_line`, hint
   texts, openers, proximity texts) is a map with every language in `state.languages`:
-  `{ "en": "...", "pt-br": "..." }`. Chat lines are 240 characters at most.
+  `{ "en": "...", "pt-br": "..." }`, never a link. Chat lines are 240 characters at most; a `delay` is 0 to 45 seconds.
 - **Every stage leads on**: its piece's `item_picked` reaction moves the story to the next node (`{ "type": "set_node", "node": "n2" }` in its `then`). `set_node` names only the next node of `bible.axis`, never anything else ("urn" is no node); on the last node there is no `set_node`: the urn ends the story. Without it the story stops dead.
 - **`contribution`** (top level, when `state.pages_to_score` lists a finder's chapter page; its
   text is the motif with that id): `{ "player", "chapter", "score": 0-3, "why": "..." }`, 0 a
@@ -431,7 +433,7 @@ sent back to you, and every round costs the server owner money. Follow the shape
 - **`extra_chapter`** (top level, only when you score a page `state.extra_chapter_score` or more):
   a detour grown from what that player wrote, `{ "question": {lang: text}, "piece": { "item":
   "ZTales.<Family>Yellow", "title": {lang: text}, "text": {lang: text}, "target": { "building" } },
-  "way_back": "<next axis node>" }`. One piece, from `catalog.places`, never where a piece is; it
+  "way_back": "<next axis node>" }` (question at most 400 characters, text 1500). One piece, from `catalog.places`, never where a piece is; it
   never blocks the story and the urn takes it as an extra. The bridge writes its id.
 - **`chapter_end`** (top level, every node but the last): `{ "record": {lang: text}, "echo": {lang: text} }`, at most 400 characters each, diary lines in the first person for the players who did not find the piece: `record` for those near or who took part (they felt it happen), `echo` for those far away (word of it reached them). Never what the piece says.
 - **The stage you write is covered**: for the node being opened, one reaction per piece
@@ -540,9 +542,6 @@ Tone examples, never to be copied (write your own every time):
 - "Warm cotton again, behind my eyes. A drum stopped mid-turn, a door left open. Someone left
   in a hurry and meant to come back for something. I keep counting while I think about it. I don't
   know what I'm counting."
-- "I was close. Under everything there was a hiss, like a radio left on in another room, and for
-  one second it said my name in her voice. My hand won't stop shaking while I write this. I'm
-  going back. I don't want to go back."
 
 ## The character's state
 

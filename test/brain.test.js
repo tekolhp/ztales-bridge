@@ -183,7 +183,7 @@ test("output caps per task, overridable; a one-writer seed gets bible and stage"
   assert.equal(maxTokensFor({ role: "story", task: "bible" }), 12000);
   assert.equal(maxTokensFor({ role: "stage", task: "stage" }), 16000);
   assert.equal(maxTokensFor({ role: "dream", task: "echo" }), 1500);
-  assert.equal(maxTokensFor({ role: "watch", task: "watch" }), 2000);
+  assert.equal(maxTokensFor({ role: "watch", task: "watch" }), 3500);
   assert.equal(maxTokensFor({ role: "stage", task: "seed" }), 28000);
   assert.equal(maxTokensFor({ role: "story" }, { story: 9000, stage: 0 }), 9000);
   assert.equal(maxTokensFor({ role: "story" }, tokenCaps({})), 12000);
@@ -214,4 +214,29 @@ test("a provider failure mid-answer is tried once more, same model", async () =>
   const r = await ask({ provider: "openrouter", key: "k", model: "big", fallbackModels: ["small"], fetch }, "S", "{}");
   assert.deepEqual(seen, ["big", "big"]);
   assert.deepEqual(r.doc.directives, []);
+});
+
+test("no credit: Anthropic's 400 'credit balance is too low' and OpenRouter's 402 are flagged; other errors are not", async () => {
+  const seen = [];
+  await assert.rejects(
+    ask({ provider: "anthropic", key: KEY, model: "claude-haiku-5-5",
+      fetch: fakeFetch(400, { type: "error", error: { type: "invalid_request_error",
+        message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } }, seen) }, "S", "{}"),
+    (e) => e instanceof BrainError && e.status === 400 && e.noCredit === true && !e.message.includes(KEY));
+  await assert.rejects(
+    ask({ provider: "openrouter", key: KEY, model: "m", fetch: fakeFetch(402, { error: { code: 402, message: "Insufficient credits" } }, seen) }, "S", "{}"),
+    (e) => e instanceof BrainError && e.status === 402 && e.noCredit === true);
+  // inside a 200: the choice's own error
+  await assert.rejects(
+    ask({ provider: "openrouter", key: KEY, model: "m", fetch: fakeFetch(200, { choices: [{ finish_reason: "error",
+      error: { code: 402, message: "Insufficient credits. Add more using https://openrouter.ai/credits" }, message: { content: "" } }] }, seen) }, "S", "{}"),
+    (e) => e instanceof BrainError && e.noCredit === true);
+  await assert.rejects(
+    ask({ provider: "anthropic", key: KEY, model: "m", fetch: fakeFetch(400, { error: { message: "max_tokens: too large" } }, seen) }, "S", "{}"),
+    (e) => e instanceof BrainError && e.status === 400 && e.noCredit === false);
+  await assert.rejects(
+    ask({ provider: "openrouter", key: KEY, model: "m", fetch: fakeFetch(429, { error: { message: "Rate limit exceeded" } }, seen) }, "S", "{}"),
+    (e) => e instanceof BrainError && e.status === 429 && e.noCredit === false);
+  await assert.rejects(ask({ provider: "openrouter", key: KEY, model: "m", fetch: fakeFetch(200, { choices: [] }, seen) }, "S", "{}"),
+    (e) => e instanceof BrainError && e.noCredit === false, "an empty answer is a failure, not no credit");
 });

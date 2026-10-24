@@ -1,18 +1,23 @@
 /**
  * Near a node, the diary feels it (Teko, 2026-10-13).
  *
- * Nodes are fixed places. Around the current node the bridge draws three nested rings; when a
+ * Nodes are fixed places. Around the current node the bridge draws four nested rings; when a
  * player first enters one, a reflection is written into that player's diary, stronger the closer
- * the ring: far = a vague unease, mid = a strong pull, near = almost certainty. The AI writes the
- * three reflections (in every language in use); the geometry is code, from the real building the
- * node's anchor piece was placed in, so the rings are never where the AI imagined but where the
- * piece actually is.
+ * the ring: wide = the faintest pull, far = a vague unease, mid = a strong pull, near = almost
+ * certainty. The story AI writes far, mid and near (in every language in use); wide (Teko,
+ * 2026-10-24: the first proximity line sooner, instead of more hints over time) comes from the
+ * clue agent or its plain fallback, and until then carries the story's far line. The geometry is
+ * code, from the real building the node's anchor piece was placed in, so the rings are never where
+ * the AI imagined but where the piece actually is.
  *
  * Built from the mod's own pieces: define_zone (zone_entered once per player) + a reaction per
  * ring (once per player) whose diary_entry goes to "$player". Nothing new in the mod but ordering.
  */
 
+// widest first: a ring's weight is its place here (wide 1 ... near 4). Ids never change
+// (`<prefix>prox_<node>_<key>`), so chapters already in the world keep their rings.
 export const RINGS = [
+  { key: "wide", half: 300 },
   { key: "far", half: 120 },
   { key: "mid", half: 45 },
   { key: "near", half: 12 },
@@ -50,10 +55,21 @@ export function nodeCenter(directives, axisNode) {
   return null;
 }
 
+/** The rings the story writer writes; wide is the clue agent's (else the story's far stands in). */
+export const STORY_RINGS = ["far", "mid", "near"];
+
+const empty = (v) => v === undefined || v === null || v === "";
+
 /** What the AI must provide for a stage: { far, mid, near }, each a text (or { lang: text }). */
 export function missingProximity(texts) {
-  if (!texts || typeof texts !== "object") return RINGS.map((r) => r.key);
-  return RINGS.map((r) => r.key).filter((k) => texts[k] === undefined || texts[k] === null || texts[k] === "");
+  if (!texts || typeof texts !== "object") return [...STORY_RINGS];
+  return STORY_RINGS.filter((k) => empty(texts[k]));
+}
+
+/** A ring's text: its own, and for wide the far line when it has none. */
+export function ringText(texts, key) {
+  const own = texts ? texts[key] : undefined;
+  return key === "wide" && empty(own) ? texts?.far : own;
 }
 
 /** The zones and reactions for one node. Ids carry the node, so a stage written twice adds nothing. */
@@ -70,7 +86,7 @@ export function proximityDirectives(node, center, texts, prefix = "") {
       // one group per node: the mod keeps only the strongest ring the player reached, and
       // writes it later, in a gap of their play (ZTales_DiaryPace), never on the spot
       then: [{ id: `${zone}_e`, type: "diary_entry", player: "$player", node, group: `${prefix}prox_${node}`, weight: i + 1,
-        text: texts[r.key] }],
+        text: ringText(texts, r.key) }],
     });
   }
   return out;

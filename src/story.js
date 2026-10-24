@@ -20,14 +20,14 @@ import { seal, open } from "./crypto.js";
 import { ensureChapterEnds, ensureChapterOpen, fixUnreadable, fixSetNodes, duplicatePieces, splitStall, gateBatch, missingCoverage,
   sharedSpots, storyItems, fixClueItems, fillClosingPlayers, PLAIN_NOTE } from "./gates.js";
 import { candidates, stagePoints, stageCells, worldSlice, finalStageCells, finalPlaceRule, inSpawnTown,
-  spawnPoints, isLouisville, SPAWN_EXCLUSION } from "./catalog.js";
+  spawnPoints, isLouisville, SPAWN_EXCLUSION, cellsAround } from "./catalog.js";
 import { kFor, nextCreativity, makeAllowItem, rewardCandidates, lootFactor, scaleLoot } from "./loot.js";
-import { nodeCenter, missingProximity, proximityDirectives } from "./proximity.js";
+import { nodeCenter, missingProximity, proximityDirectives, STORY_RINGS } from "./proximity.js";
 import { chooseUrnPlace, urnWords, chargeDirective, checkFinaleAnswer, finaleDirectives, piecesByNode } from "./finale.js";
 import { finalTaleDirectives, chooseFinalTalePlace } from "./finaltale.js";
 import { loadRewardRows, URN_BONUS_MAX } from "./reward.js";
 import { collabScore, extraCount, extraDirectives, extraTitle, EXTRA_MAX } from "./collab.js";
-import { TOOLKIT_PROMPT } from "./toolkit.js";
+import { TOOLKIT_PROMPT, versionAtLeast } from "./toolkit.js";
 import { tier } from "./difficulty.js";
 import { BRIDGE_ONLY_TYPES } from "./protocol.js";
 import { stepsDue, stepOf, cycleOf } from "./pacing.js";
@@ -251,6 +251,34 @@ function failureNote(state, key) {
     + "Answer again, more compactly: stay inside the answer budget in the rules, short texts, nothing repeated, only the JSON." }];
 }
 
+/**
+ * The clue agent's calls per chapter (Teko, 2026-10-24): the first and at most two retries, each
+ * told exactly what was wrong. Counted in state per chapter (`clue_tries`), so a restart or the
+ * next tick never starts over; the opening upgrade (open#<node>) counts against the same three.
+ */
+export const CLUES_MAX_CALLS = 3;
+
+const CUT_NOTE = { id: "previous_answer", reason: "your answer was cut at the token limit: answer shorter "
+  + "(the whole answer under 3000 characters, each line short, nothing said twice, only the JSON)" };
+
+/** What the clue agent is told about its last answer: never the same question blindly. */
+export function clueReasons({ err = null, errors = [], cut = false } = {}) {
+  const out = [];
+  if (err) {
+    const m = String(err?.message || err).slice(0, 200);
+    if (/cut at the token limit/.test(m)) out.push(CUT_NOTE);
+    else if (/JSON|not an object|empty answer|not a list/.test(m)) {
+      out.push({ id: "previous_answer", reason: `your previous answer could not be read (${m}): answer only the JSON object the rules ask for` });
+    } else out.push({ id: "previous_answer", reason: `your previous call failed (${m}): answer again, only the JSON object, short` });
+  }
+  if (cut) out.push(CUT_NOTE);
+  if (errors.length) {
+    out.push({ id: "previous_answer", reason: "your previous answer was refused by the clue gate for the reasons listed next: fix exactly these and answer again" },
+      ...errors.slice(0, 12).map((e) => ({ id: "clue_gate", reason: String(e).slice(0, 200) })));
+  }
+  return out;
+}
+
 /** What to remember of a failed call for failureNote (only failures that had an answer). */
 function failureRecord(key, e, nowSec) {
   return { ai_last_failure: { task: key, reason: String(e?.message || "error").slice(0, 200), at: nowSec } };
@@ -282,6 +310,40 @@ export function makeDecide(deps) {
       if (state.ai_last_failure?.task !== key) return;
       state.ai_last_failure = null;
       await store.setState({ ai_last_failure: null });
+    };
+    // The clue agent's tries for one chapter (`key`: season prefix + node), persisted: { n, why }.
+    // `why` is what the next call is told about the last answer (clueReasons).
+    const clueTry = (key) => (state.clue_tries || {})[key] || { n: 0, why: [] };
+    const saveClueTry = async (key, patch) => {
+      const prefix = key.slice(0, key.indexOf("_") + 1);
+      // only this season's chapters are kept: the record never grows past one story
+      const kept = Object.fromEntries(Object.entries(state.clue_tries || {}).filter(([k]) => k.startsWith(prefix)));
+      state.clue_tries = { ...kept, [key]: { ...clueTry(key), ...patch } };
+      await store.setState({ clue_tries: state.clue_tries });
+    };
+    /**
+     * One clue-agent call for a chapter, within the owner's caps: { res, purpose } for an answer,
+     * { err, purpose } for a failed call (logged with its cost), { noCredit: why } when the daily
+     * cap or budget is reached or the provider says the account has no credit, { exhausted } when
+     * the chapter's CLUES_MAX_CALLS are spent. The count is saved before the call is made.
+     */
+    const clueAsk = async (key, base, context) => {
+      const tried = clueTry(key);
+      if (tried.n >= CLUES_MAX_CALLS) return { exhausted: true };
+      if ((await store.callsSince(nowSec - 86400)) >= maxCalls) return { noCredit: "daily AI call cap reached" };
+      const spent = await store.costSince(nowSec - 86400);
+      if (spent >= maxUsd) return { noCredit: `daily AI budget reached ($${spent.toFixed(2)} of $${maxUsd})` };
+      await saveClueTry(key, { n: tried.n + 1 });
+      const purpose = tried.n ? `${base}.retry${tried.n}` : base;
+      try {
+        return { res: await deps.askClues(deps.system, context(tried.why || []), { role: "clues", task: "clues", models: state.models }), purpose };
+      } catch (e) {
+        // a failed call is logged (and its cost counted) like any other
+        await logAnswer(store, deps.bibleKey, purpose, nowSec, null, e);
+        if (e?.noCredit) return { noCredit: `the provider says the account has no credit (${String(e.message).slice(0, 120)})`, purpose, err: e };
+        await saveClueTry(key, { why: clueReasons({ err: e }) });
+        return { err: e, purpose };
+      }
     };
     const motifs = motifsFrom(fresh);
     if (motifs.length) await store.addMotifs(motifs);
@@ -369,6 +431,128 @@ export function makeDecide(deps) {
     const quietOver = !!wait?.over;
     const sealed = state.story_closed ? null : await store.getBible();
     if (state.story_closed && !quietOver) return null;
+    // no AI credit right now: the day's call cap or dollar budget reached
+    const noCreditNow = async () => {
+      if ((await store.callsSince(nowSec - 86400)) >= maxCalls) return "daily AI call cap reached";
+      const spent = await store.costSince(nowSec - 86400);
+      return spent >= maxUsd ? `daily AI budget reached ($${spent.toFixed(2)} of $${maxUsd})` : null;
+    };
+    // the open chapter has no opening in the diaries (it opened before mod 0.2.2, or a stage
+    // was accepted before openings existed): send it once, with no AI, from the bible's title
+    // (Teko, 2026-10-24: production's chapter 2 opened with nothing). Its intuition is the clue
+    // agent's, asked next (the upgrade below); plain words only when there is no AI credit
+    if (sealed && state.node && !state.story_closed && versionAtLeast(state.mod_version, "0.2.2")) {
+      const done = state.openings_sent || [];
+      const bibleNow = await open(deps.bibleKey, sealed);
+      const key = `${bibleNow?.season || state.season || "s1"}_${state.node}`;
+      if (!done.includes(key)) {
+        const axisNode = bibleNow?.axis?.find((n) => n.id === state.node);
+        const isFirst = bibleNow?.axis?.[0]?.id === state.node;
+        if (axisNode) {
+          const prefix = `${bibleNow?.season || state.season || "s1"}_`;
+          const piece = pieceDirective(Object.values(state.piece_dirs || {}), axisNode);
+          let intuition = null;
+          const xy = piece && /^b_(\d+)_(\d+)$/.exec(String(piece.target?.building || ""));
+          if (xy && !isFirst && typeof deps.askClues === "function" && await noCreditNow()) {
+            const cellRows = await loadCells(t, cellsAround(Number(xy[1]), Number(xy[2]), index.cell_size || 300), state.catalog_cells);
+            const buildings = buildingsOf(cellRows, index.building_fields || []);
+            const b = buildingOfTarget(piece.target, buildings);
+            const room = b && typeof piece.target?.room === "string" && (b.rooms || []).includes(piece.target.room) ? piece.target.room : null;
+            if (b) intuition = plainOpen(buildingFacts(b, buildings, { room }), { languages: state.languages || ["en"], room });
+            if (intuition) {
+              state.openings_plain = [...(state.openings_plain || []), key];
+              await store.setState({ openings_plain: state.openings_plain });
+            }
+          }
+          const directives = [];
+          ensureChapterOpen(directives, axisNode, { prefix, intuition, first: isFirst });
+          state.openings_sent = [...done, key];
+          await store.setState({ openings_sent: state.openings_sent });
+          if (directives.length) return { directives, note: `${directives[0].id}: the open chapter's missing opening sent` };
+        }
+      }
+    }
+    // an open chapter whose opening carried no AI intuition: the clue agent writes one, sent to
+    // every diary as a line under the opening (Teko, 2026-10-24: the plain line of chapter 2 gave
+    // no direction; the AI is the default). Refused, cut or failed: asked again with what was wrong,
+    // within the chapter's CLUES_MAX_CALLS (shared with the stage's clue call, persisted). Still
+    // nothing after that: nothing is sent, and it is never asked again. Plain words only when there
+    // is no AI credit, and only if the opening did not carry them already
+    if (sealed && state.node && !state.story_closed && typeof deps.askClues === "function" && versionAtLeast(state.mod_version, "0.2.2")) {
+      const bibleNow = await open(deps.bibleKey, sealed);
+      const prefix = `${bibleNow?.season || state.season || "s1"}_`;
+      const key = `${prefix}${state.node}`;
+      const axisNode = bibleNow?.axis?.find((n) => n.id === state.node);
+      const isFirst = bibleNow?.axis?.[0]?.id === state.node;
+      if (axisNode && !isFirst && (state.openings_sent || []).includes(key) && !(state.openings_ai || []).includes(key)
+          && !(state.openings_upgraded || []).includes(key)) {
+        const markDone = async () => {
+          state.openings_upgraded = [...(state.openings_upgraded || []), key];
+          await store.setState({ openings_upgraded: state.openings_upgraded });
+        };
+        const purpose = `open#${state.node}`;
+        const piece = pieceDirective(Object.values(state.piece_dirs || {}), axisNode);
+        const xy = piece && /^b_(\d+)_(\d+)$/.exec(String(piece.target?.building || ""));
+        const cellRows = xy ? await loadCells(t, cellsAround(Number(xy[1]), Number(xy[2]), index.cell_size || 300), state.catalog_cells) : [];
+        const buildings = buildingsOf(cellRows, index.building_fields || []);
+        const b = xy ? buildingOfTarget(piece.target, buildings) : null;
+        if (!b) await markDone();
+        else {
+          const room = typeof piece.target?.room === "string" && (b.rooms || []).includes(piece.target.room) ? piece.target.room : null;
+          const facts = buildingFacts(b, buildings, { room });
+          const languages = state.languages || ["en"];
+          const forbidden = bibleNow?.forbidden_entities || [];
+          const lineOf = (text, tag) => ({ id: `${prefix}chopen_${state.node}_${tag}`, type: "diary_entry", player: "$all", node: state.node, text });
+          for (;;) {
+            const a = await clueAsk(key, purpose, (why) => buildContext({
+              task: "clues", state_version: state.state_version || 0,
+              bible: { title: bibleNow?.title ?? null, forbidden_entities: forbidden,
+                chapter: { id: state.node, title: axisNode.chapter_title || axisNode.title || null, question: axisNode.question ?? null,
+                  place: axisNode.place ?? axisNode.location_fn ?? null, what_happened: axisNode.what_happened ?? null,
+                  piece: (axisNode.pieces || []).map((p) => ({ item: p.item, title: p.title ?? null, shows: p.shows ?? null }))[0] || null } },
+              state: { node: state.node, languages },
+              rejections: why,
+              clues_for: {
+                rules: `${CLUES_PROMPT} This call: only open is used, so you may answer only { open }; the chapter is already under way, so let it also say which way to turn: the town or the nearest named place.`,
+                piece: { item: piece.item ?? null, title: piece.title ?? null, text: piece.text ?? null,
+                  container: { room: piece.target?.room ?? null, container_pref: piece.target?.container_pref ?? null, on_floor: !!piece.target?.on_floor } },
+                solution: stageTexts([piece], null),
+                story_rings: null,
+                building: facts.building, facts: facts.facts.map(({ id, about, distinctive }) => ({ id, about, distinctive })),
+                neighbour: facts.neighbour,
+              },
+            }));
+            if (a.exhausted) { await markDone(); break; }
+            if (a.noCredit) {
+              await markDone();
+              const text = (state.openings_plain || []).includes(key) ? null : plainOpen(facts, { languages, room });
+              const line = text ? lineOf(text, "plain") : null;
+              if (line && !gateBatch([line], { languages: state.languages, forbidden }).rejected.length) {
+                state.openings_plain = [...(state.openings_plain || []), key];
+                await store.setState({ openings_plain: state.openings_plain });
+                return { directives: [line], note: `${line.id}: no AI credit (${a.noCredit}): the open chapter's intuition in plain words` };
+              }
+              break;
+            }
+            if (a.err) continue;
+            const res = a.res;
+            const og = openGate(res.doc?.open, { facts: facts.facts, languages });
+            const line = lineOf(og.text, "ai");
+            const errors = [...og.errors];
+            if (og.ok) errors.push(...gateBatch([line], { languages: state.languages, forbidden }).rejected.map((r) => `open: ${r.reason}`));
+            await logAnswer(store, deps.bibleKey, a.purpose, nowSec,
+              { ...res, note: [res.note, errors.length ? `refused: ${errors.join("; ")}`.slice(0, 250) : null].filter(Boolean).join("; ") || null });
+            if (!errors.length) {
+              await markDone();
+              state.openings_ai = [...(state.openings_ai || []), key];
+              await store.setState({ openings_ai: state.openings_ai });
+              return { directives: [line], note: `${line.id}: the AI's intuition for the open chapter, for every diary` };
+            }
+            await saveClueTry(key, { why: clueReasons({ errors, cut: /cut at the token limit/.test(res.note || "") }) });
+          }
+        }
+      }
+    }
     // a node change toward the stage already written (the season opening on n1, a restart) is
     // not a milestone: only a node nobody wrote yet calls the AI
     // only a chapter of the story is a stage: a node outside the axis (the AI once sent "urn")
@@ -596,12 +780,18 @@ export function makeDecide(deps) {
         note: `watch: ${g.accepted.map((d) => `${d.kind} for ${d.player}`).join(", ") || "nothing written"}${quiet.length ? ` (nothing for ${quiet.join(", ")})` : ""}` };
     }
 
-    // The clue agent (src/clues.js): one call, the chapter model, the rings rewritten from the
-    // building the piece is really in. Returns { notes, directives? }: directives only when the
-    // answer passed cluesGate; otherwise the story's own rings stay (never a retry, never a block).
+    // The clue agent (src/clues.js): the chapter model rewrites the rings from the building the
+    // piece is really in, and writes the chapter's opening intuition. Returns { notes, directives?, open }.
+    // Three parts, judged apart and kept apart (Teko, 2026-10-24): the rings (far, mid, near), wide,
+    // and the opening. A part refused, cut or unread is asked again, the agent told exactly what was
+    // wrong, at most CLUES_MAX_CALLS calls per chapter (persisted). Still missing after that: the
+    // story's own rings stay (wide: the story's far) and the opening has no intuition. The bridge's
+    // plain words (plainRings, plainOpen) stand in ONLY when there is no AI credit: the day's cap or
+    // budget reached, or the provider saying the account has no credit.
     async function runClues({ axisNode, prefix, answer, accepted, bible, buildings, debug }) {
       const node = axisNode.id;
       const purpose = `clues#${node}`;
+      const key = `${prefix}${node}`;
       const inBatch = pieceDirective(accepted, axisNode);
       const piece = inBatch || pieceDirective(Object.values(state.piece_dirs || {}), axisNode);
       const b = piece ? buildingOfTarget(piece.target, buildings) : null;
@@ -610,92 +800,137 @@ export function makeDecide(deps) {
       const facts = buildingFacts(b, buildings, { room: askedRoom });
       const languages = state.languages || ["en"];
       const forbidden = axisNode.ending ? [] : bible?.forbidden_entities || [];
-      // no clue agent's words (no credit, the cap, a failed or refused answer): mid and near in
-      // plain words from the same facts, so the rings still narrow the search (Teko, 2026-10-23)
-      // the chapter's opening intuition (docs/13): the agent's when it passed openGate, else plain
-      // words from the same facts (no compass, no "it is in there")
-      const plainIntuition = () => plainOpen(facts, { languages, room: askedRoom });
-      const plain = (why, open = plainIntuition()) => {
-        const pr = plainRings(facts, { languages, room: askedRoom });
-        const far = (accepted.find((d) => d.id === `${prefix}prox_${node}_far_r`)?.then || []).find((x) => x?.type === "diary_entry")?.text;
-        if (!pr || far === undefined) return { notes: [`${purpose}: ${why}: the story's rings stay`], open };
-        // the story's far stays unless it names the place; then the plain one
-        const farNames = cluesGate({ far, mid: pr.mid, near: pr.near }, { facts: facts.facts, languages }).errors.some((e) => e.startsWith("far: names"));
-        let out = withRingTexts(accepted, node, { far: farNames ? pr.far : far, mid: pr.mid, near: pr.near }, prefix).directives;
-        const notes = [`${purpose}: ${why}: mid and near in plain words from ${b.id}`];
-        if (pr.room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
-          out = withPieceRoom(out, piece.id, pr.room);
-          notes.push(`${purpose}: ${piece.id} asked into the ${pr.room}, as the plain words say`);
-        }
-        return { notes, directives: out, open };
+      const ringId = (k) => `${prefix}prox_${node}_${k}_r`;
+      const storyFar = (accepted.find((d) => d.id === ringId("far"))?.then || []).find((x) => x?.type === "diary_entry")?.text;
+      // the story's far names the place it guessed (the laundromat of 2026-10-22): not good enough for wide
+      const storyFarNames = storyFar !== undefined
+        && cluesGate({ far: storyFar }, { facts: facts.facts, languages }).errors.some((e) => e.startsWith("far: names"));
+      const ringsGate = (texts, keys) => {
+        const ids = new Set(keys.map(ringId));
+        return gateBatch(withRingTexts(accepted, node, texts, prefix).directives.filter((d) => ids.has(d.id)),
+          { languages: state.languages, forbidden }).rejected.map((r) => `${r.id}: ${r.reason}`);
       };
-      if ((await store.callsSince(nowSec - 86400)) >= maxCalls) return plain("daily AI call cap reached");
-      const spentNow = await store.costSince(nowSec - 86400);
-      if (spentNow >= maxUsd) return plain(`daily AI budget reached ($${spentNow.toFixed(2)} of $${maxUsd})`);
-      const context = buildContext({
-        task: "clues", state_version: state.state_version || 0,
-        // what the rings need of the story: the chapter and its piece, never the ending
-        bible: { title: bible?.title ?? null, forbidden_entities: forbidden,
-          chapter: { id: node, title: axisNode.chapter_title || axisNode.title || null, question: axisNode.question ?? null,
-            place: axisNode.place ?? axisNode.location_fn ?? null, what_happened: axisNode.what_happened ?? null,
-            piece: (axisNode.pieces || []).map((p) => ({ item: p.item, title: p.title ?? null, shows: p.shows ?? null }))[0] || null } },
-        state: { node, languages },
-        clues_for: {
-          rules: CLUES_PROMPT,
-          piece: { item: piece.item ?? null, title: piece.title ?? null, text: piece.text ?? null,
-            container: { room: piece.target?.room ?? null, container_pref: piece.target?.container_pref ?? null, on_floor: !!piece.target?.on_floor } },
-          solution: stageTexts(accepted, answer?.hints?.[node] || null),
-          story_rings: answer?.proximity ?? null,
-          building: facts.building, facts: facts.facts.map(({ id, about, distinctive }) => ({ id, about, distinctive })),
-          neighbour: facts.neighbour,
-        },
-      });
-      let res;
-      try {
-        res = await deps.askClues(deps.system, context, { role: "clues", task: "clues", models: state.models });
-      } catch (e) {
-        // a failed call is logged (and its cost counted) like any other; the chapter goes on
-        await logAnswer(store, deps.bibleKey, purpose, nowSec, null, e);
-        debug.push({ kind: "clues", error: e?.message, cost: e?.cost ?? null, raw: e?.raw ?? null });
-        return plain(`AI call failed (${String(e?.message || e).slice(0, 120)})`);
-      }
-      const g = cluesGate(res.doc, { facts: facts.facts, languages, room: askedRoom });
-      // the opening intuition, judged apart: a bad one costs only itself (plain words instead)
-      const og = openGate(res.doc?.open, { facts: facts.facts, languages });
+      const PART_NAMES = { core: "far, mid and near", wide: "wide", open: "open" };
+      let core = null;   // { texts: { far, mid, near }, cited, room }
+      let wide = null;
       let open = null;
-      if (og.ok) {
-        const tg = gateBatch([{ id: `${prefix}chopen_${node}`, type: "open_chapter", chapter: node, intuition: og.text }],
-          { languages: state.languages, forbidden });
-        if (tg.rejected.length) og.errors.push(...tg.rejected.map((r) => `open: ${r.reason}`));
-        else open = og.text;
+      let noCredit = null;
+      const notes = [];
+      while (!(core && wide && open)) {
+        const missing = ["core", "wide", "open"].filter((p) => !{ core, wide, open }[p]).map((p) => PART_NAMES[p]);
+        const kept = ["core", "wide", "open"].filter((p) => ({ core, wide, open }[p])).map((p) => PART_NAMES[p]);
+        const only = kept.length ? ` This call: ${kept.join(" and ")} already passed and are kept; only ${missing.join(" and ")} will be used, so you may answer only ${missing.length > 1 ? "those" : "that"} (and cites).` : "";
+        const a = await clueAsk(key, purpose, (why) => buildContext({
+          task: "clues", state_version: state.state_version || 0,
+          // what the rings need of the story: the chapter and its piece, never the ending
+          bible: { title: bible?.title ?? null, forbidden_entities: forbidden,
+            chapter: { id: node, title: axisNode.chapter_title || axisNode.title || null, question: axisNode.question ?? null,
+              place: axisNode.place ?? axisNode.location_fn ?? null, what_happened: axisNode.what_happened ?? null,
+              piece: (axisNode.pieces || []).map((p) => ({ item: p.item, title: p.title ?? null, shows: p.shows ?? null }))[0] || null } },
+          state: { node, languages },
+          rejections: why,
+          clues_for: {
+            rules: `${CLUES_PROMPT}${only}`,
+            piece: { item: piece.item ?? null, title: piece.title ?? null, text: piece.text ?? null,
+              container: { room: piece.target?.room ?? null, container_pref: piece.target?.container_pref ?? null, on_floor: !!piece.target?.on_floor } },
+            solution: stageTexts(accepted, answer?.hints?.[node] || null),
+            story_rings: answer?.proximity ?? null,
+            building: facts.building, facts: facts.facts.map(({ id, about, distinctive }) => ({ id, about, distinctive })),
+            neighbour: facts.neighbour,
+          },
+        }));
+        if (a.exhausted) { notes.push(`${purpose}: ${CLUES_MAX_CALLS} calls spent on this chapter`); break; }
+        if (a.noCredit) {
+          noCredit = a.noCredit;
+          if (a.err) debug.push({ kind: "clues", error: a.err.message, cost: a.err.cost ?? null, raw: a.err.raw ?? null });
+          break;
+        }
+        if (a.err) {
+          notes.push(`${a.purpose}: AI call failed (${String(a.err?.message || a.err).slice(0, 120)})`);
+          debug.push({ kind: "clues", error: a.err?.message, cost: a.err?.cost ?? null, raw: a.err?.raw ?? null });
+          continue;
+        }
+        const res = a.res;
+        const errors = [];
+        const g = cluesGate(res.doc, { facts: facts.facts, languages, room: askedRoom });
+        if (!core) {
+          const own = g.errors.filter((e) => !e.startsWith("wide:"));
+          if (!own.length) own.push(...ringsGate({ far: g.texts.far, mid: g.texts.mid, near: g.texts.near }, STORY_RINGS));
+          if (own.length) errors.push(...own);
+          else {
+            core = { texts: { far: g.texts.far, mid: g.texts.mid, near: g.texts.near }, cited: g.cited, room: g.room };
+            notes.push(`${a.purpose}: rings rewritten from ${b.id} (mid ${g.cited.mid.join(", ")}; near ${g.cited.near.join(", ")})`);
+          }
+        }
+        if (!wide) {
+          const own = g.errors.filter((e) => e.startsWith("wide:"));
+          if (!own.length) own.push(...ringsGate({ wide: g.texts.wide }, ["wide"]));
+          if (own.length) errors.push(...own);
+          else wide = g.texts.wide;
+        }
+        if (!open) {
+          // the opening intuition, judged apart: a bad one costs only itself
+          const og = openGate(res.doc?.open, { facts: facts.facts, languages });
+          if (og.ok) {
+            const tg = gateBatch([{ id: `${prefix}chopen_${node}`, type: "open_chapter", chapter: node, intuition: og.text }],
+              { languages: state.languages, forbidden });
+            og.errors.push(...tg.rejected.map((r) => `open: ${r.reason}`));
+          }
+          if (og.errors.length) errors.push(...og.errors);
+          else {
+            open = og.text;
+            notes.push(`${a.purpose}: the opening intuition written from ${b.id}`);
+            if (!(state.openings_ai || []).includes(key)) {
+              state.openings_ai = [...(state.openings_ai || []), key];
+              await store.setState({ openings_ai: state.openings_ai });
+            }
+          }
+        }
+        const cut = /cut at the token limit/.test(res.note || "");
+        await logAnswer(store, deps.bibleKey, a.purpose, nowSec,
+          { ...res, note: [res.note, errors.length ? `refused by the clue gate: ${errors.join("; ")}`.slice(0, 250) : null].filter(Boolean).join("; ") || null });
+        debug.push({ kind: "clues", model: res.model, cost: res.cost, answer: res.doc, raw: res.raw ?? null, rejections: errors });
+        if (errors.length) {
+          notes.push(`${a.purpose}: refused (${errors.slice(0, 3).join("; ")})`);
+          await saveClueTry(key, { why: clueReasons({ errors, cut: cut && (!core || !wide || !open) }) });
+        }
       }
-      const openNote = open ? `${purpose}: the opening intuition written from ${b.id}`
-        : `${purpose}: the opening intuition in plain words (${og.errors.slice(0, 2).join("; ") || "none written"})`;
-      if (!open) open = plainIntuition();
-      // the rewritten rings go through the same text gate as everything else (languages, forbidden names)
-      let out = null;
-      const errors = [...g.errors];
-      if (g.ok) {
-        const ringIds = new Set(["far", "mid", "near"].map((k) => `${prefix}prox_${node}_${k}_r`));
-        const rewritten = withRingTexts(accepted, node, g.texts, prefix).directives;
-        const tg = gateBatch(rewritten.filter((d) => ringIds.has(d.id)), { languages: state.languages, forbidden });
-        if (tg.rejected.length) errors.push(...tg.rejected.map((r) => `${r.id}: ${r.reason}`));
-        else out = rewritten;
+      // no AI credit: the bridge's plain words for what the agent did not write
+      const pr = noCredit ? plainRings(facts, { languages, room: askedRoom }) : null;
+      if (noCredit) notes.push(`${purpose}: ${noCredit}: no AI credit`);
+      let out = accepted;
+      let room = null;
+      if (core) {
+        out = withRingTexts(accepted, node, { ...core.texts,
+          wide: wide || (noCredit && pr?.wide) || (storyFar !== undefined && !storyFarNames ? storyFar : core.texts.far) }, prefix).directives;
+        room = core.room;
+        if (!wide) notes.push(`${purpose}: wide ${noCredit && pr?.wide ? "in plain words" : storyFarNames || storyFar === undefined ? "takes the agent's far" : "takes the story's far"}`);
+      } else if (noCredit && pr && storyFar !== undefined) {
+        // the story's far stays unless it names the place; then the plain one
+        out = withRingTexts(accepted, node, { wide: wide || pr.wide || storyFar, far: storyFarNames ? pr.far : storyFar, mid: pr.mid, near: pr.near }, prefix).directives;
+        room = pr.room;
+        notes.push(`${purpose}: wide, mid and near in plain words from ${b.id}`);
+      } else {
+        // the agent failed (not for credit): the story writer's own rings stay; a good wide is kept
+        if (wide) out = withRingTexts(accepted, node, { wide }, prefix).directives;
+        notes.push(`${purpose}: the story's rings stay${wide ? " (wide from the agent)" : ""}`);
       }
-      await logAnswer(store, deps.bibleKey, purpose, nowSec,
-        { ...res, note: [res.note, out ? null : `refused by the clue gate: ${errors.join("; ")}`.slice(0, 250)].filter(Boolean).join("; ") || null });
-      debug.push({ kind: "clues", model: res.model, cost: res.cost, answer: res.doc, raw: res.raw ?? null, rejections: errors });
-      if (!out) {
-        const p = plain(`refused (${errors.slice(0, 3).join("; ")})`, open);
-        return { ...p, notes: [...p.notes, openNote] };
+      // the piece goes where the rings point: the room the near line evokes, when none was asked
+      if (room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
+        out = withPieceRoom(out, piece.id, room);
+        notes.push(`${purpose}: ${piece.id} asked into the ${room}, as the ${core ? "clues" : "plain words"} say`);
       }
-      const notes = [`${purpose}: rings rewritten from ${b.id} (mid ${g.cited.mid.join(", ")}; near ${g.cited.near.join(", ")})`, openNote];
-      // the piece goes where the clues point: the room the near line evokes, when none was asked
-      if (g.room && !askedRoom && inBatch && piece.id && typeof piece.target?.building === "string" && typeof piece.target?.x !== "number") {
-        out = withPieceRoom(out, piece.id, g.room);
-        notes.push(`${purpose}: ${piece.id} asked into the ${g.room}, as the clues say`);
-      }
-      return { notes, directives: out, open };
+      if (!open && noCredit) {
+        open = plainOpen(facts, { languages, room: askedRoom });
+        if (open) {
+          notes.push(`${purpose}: the opening intuition in plain words (no AI credit)`);
+          if (!(state.openings_plain || []).includes(key)) {
+            state.openings_plain = [...(state.openings_plain || []), key];
+            await store.setState({ openings_plain: state.openings_plain });
+          }
+        }
+      } else if (!open) notes.push(`${purpose}: the opening goes without an intuition`);
+      return { notes, directives: out === accepted ? undefined : out, open };
     }
 
     async function run(kind, movedEv, aheadNode = null) {
@@ -1007,8 +1242,8 @@ export function makeDecide(deps) {
         return { note: `${kind} rejected: missing ${missing.join("; ")}`, rejections, debug, aiFailed: true };
       }
       // the clue agent (src/clues.js, Teko 2026-10-23): the stage passed, its piece has a building;
-      // one small call rewrites the rings from that building's real facts. Any failure keeps the
-      // story's own rings: never a reason to hold the chapter back
+      // a small call (two retries at most) rewrites the rings from that building's real facts. Any
+      // failure keeps the story's own rings: never a reason to hold the chapter back
       const ringAxis = kind === "seed" ? bible?.axis?.[0] : axisNode;
       const ringPrefix = `${bible?.season || state.season || "s1"}_`;
       let intuition = null;   // the chapter's opening intuition (docs/13), from the same call
@@ -1136,7 +1371,15 @@ export function makeDecide(deps) {
       // every chapter opens in every diary (docs/13, Teko 2026-10-23): last in the batch, after the
       // set_node that enters it (numbered by it); the first chapter without its intuition (the
       // day-zero page carries the hint)
-      if (ringAxis) notes.push(...ensureChapterOpen(accepted, ringAxis, { prefix: ringPrefix, intuition, first: kind === "seed" }));
+      if (ringAxis) {
+        notes.push(...ensureChapterOpen(accepted, ringAxis, { prefix: ringPrefix, intuition, first: kind === "seed" }));
+        // this chapter's opening goes out with its stage: the backfill above never sends it again
+        const k = `${ringPrefix}${ringAxis.id}`;
+        if (!(state.openings_sent || []).includes(k)) {
+          state.openings_sent = [...(state.openings_sent || []), k];
+          await store.setState({ openings_sent: state.openings_sent });
+        }
+      }
       const both = [...accepted, ...extrasOut];
       const used = new Set(state.used_buildings || []);
       for (const d of both) if (d.target?.building) used.add(d.target.building);

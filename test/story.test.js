@@ -110,7 +110,7 @@ test("seed: bible sealed, first stage armed, hints written, the season opens on 
   const sent = JSON.parse(t.files.get(pushed)).directives;
   assert.equal(sent[0].type, "set_node");
   assert.equal(sent[0].node, "n1");
-  assert.equal(sent.filter((d) => d.type === "reaction").length, 9, "6 from the story (one piece, the closing, four stall steps), 3 for the proximity rings");
+  assert.equal(sent.filter((d) => d.type === "reaction").length, 10, "6 from the story (one piece, the closing, four stall steps), 4 for the proximity rings");
   const hints = JSON.parse(t.files.get("inbox/hints.json"));
   assert.equal(hints.node, "n1");
   assert.equal(hints.full.text, "The pharmacy counter.");
@@ -239,27 +239,38 @@ test("sealing round-trips and refuses a short key", async () => {
   await assert.rejects(open("another-key-0123456789", s));
 });
 
-test("near the node: three nested rings around the anchor's real building, one diary reflection each", async () => {
+test("near the node: four nested rings around the anchor's real building, one diary reflection each", async () => {
   const { t } = await seedSetup([seedAnswer()]);
   const name = [...t.files.keys()].find((k) => k.startsWith("inbox/directives-"));
   const sent = JSON.parse(t.files.get(name)).directives;
   const zones = sent.filter((d) => d.type === "define_zone" && d.id.startsWith("s1_prox_n1_"));
-  assert.deepEqual(zones.map((z) => z.id), ["s1_prox_n1_far", "s1_prox_n1_mid", "s1_prox_n1_near"]);
+  // far, mid, near keep the ids chapters already in the world have; wide is new (Teko, 2026-10-24)
+  assert.deepEqual(zones.map((z) => z.id), ["s1_prox_n1_wide", "s1_prox_n1_far", "s1_prox_n1_mid", "s1_prox_n1_near"]);
+  assert.deepEqual(zones.map((z) => z.w), [600, 240, 90, 24], "wide is a 600x600 square");
   // the anchor n1_photo went into b_10700_9700: every ring is centred there
   for (const z of zones) assert.equal(z.x + z.w / 2, 10704);
-  assert.ok(zones[0].w > zones[1].w && zones[1].w > zones[2].w, "nested, widest first");
+  assert.ok(zones[0].w > zones[1].w && zones[1].w > zones[2].w && zones[2].w > zones[3].w, "nested, widest first");
   const near = sent.find((d) => d.id === "s1_prox_n1_near_r");
   assert.equal(near.once, "player");
   assert.equal(near.then[0].type, "diary_entry");
   assert.equal(near.then[0].player, "$player");
   assert.equal(near.then[0].text, "Here. It was here.");
+  // one group per node, the weight rising inward: the mod keeps only the strongest ring reached
+  const entries = ["wide", "far", "mid", "near"].map((k) => sent.find((d) => d.id === `s1_prox_n1_${k}_r`).then[0]);
+  assert.deepEqual(entries.map((e) => e.weight), [1, 2, 3, 4]);
+  assert.ok(entries.every((e) => e.group === "s1_prox_n1"));
+  // no clue agent here: the story's far stands in for wide
+  assert.deepEqual(entries[0].text, entries[1].text);
 });
 
-test("a stage without its three reflections is sent back", async () => {
+test("a stage without its three reflections is sent back; wide is never asked of the story writer", async () => {
   const thin = seedAnswer({ proximity: { far: "x" } });
   const { ai } = await seedSetup([thin, seedAnswer()]);
   assert.equal(ai.calls.length, 2);
   assert.match(JSON.stringify(ai.calls[1].rejections), /proximity reflections \(mid, near\)/);
+  const { missingProximity } = await import("../src/proximity.js");
+  assert.deepEqual(missingProximity({ far: "a", mid: "b", near: "c" }), [], "no wide from the story writer is fine");
+  assert.deepEqual(missingProximity(null), ["far", "mid", "near"]);
 });
 
 test("each player's longer history reaches the AI, grouped by player", async () => {

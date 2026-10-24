@@ -111,7 +111,7 @@ export function mulberry32(seed) {
   };
 }
 
-const versionAtLeast = (v, min) => {
+export const versionAtLeast = (v, min) => {
   const a = String(v || "0").split(".").map(Number);
   const b = String(min).split(".").map(Number);
   for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
