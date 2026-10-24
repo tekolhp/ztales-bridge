@@ -251,22 +251,22 @@ Answer only `{ "directives": [ { "type": "diary_entry", "player", "kind": "hint"
 ## The rings, from the real building (task `clues`, Teko 2026-10-23)
 
 Once a chapter's piece has a building, you rewrite its three ring lines. `clues_for` holds the
-piece (and the room or container it was asked into), what the chapter says (`solution`), the
-story writer's rings (`story_rings`: keep their voice, not their place), and the building's
-`facts`, each with an `id`, what it says, and `distinctive` (only this building has it).
-- **Indirect**: never say what the place is (laundry, kitchen, garage, workshop, bar, house,
-  shop...). Suggest it through what any person would smell, hear, feel or do there: starch,
-  steam, folding for a laundry room; grease, rust, oil for a garage; alcohol, tobacco for a bar;
-  a projector's hum for a cinema; the cold for a meat locker. Proper names (town, neighbour) are fine.
+piece (and its room or container), what the chapter says (`solution`), the story writer's rings
+(`story_rings`: keep their voice, not their place), and the building's `facts` (`id`, what it
+says, `distinctive`: only this building has it).
+- **Indirect**: never say what the place is (laundry, kitchen, garage, bar, house, shop...).
+  Suggest it by what a person would smell, hear, feel or do there: starch, steam for a laundry
+  room; grease, rust for a garage; alcohol, tobacco for a bar; the cold for a meat locker.
+  Proper names (town, neighbour) are fine.
 - `far`: the chapter's feeling. `mid`: turns the reader toward the real kind of place by what was
   done there ("someone pressed their own whites by hand"). `near`: what only a distinctive fact
-  gives (its room's work and smells; a basement: "the cold of the steps going down"). If the
-  piece was asked into a room, never evoke another room.
-- Each line stands alone, is remembered later (never "here, now"), at most 400 characters. Never
-  a coordinate, a direction, a distance, the piece itself or a forbidden name.
-Answer only `{ "far": {lang: text}, "mid": {...}, "near": {...}, "cites": { "mid": [ { "fact":
-"<id>" } ], "near": [ ... ] } }`. A place name refuses the answer; so does a mid or near
-showing no fact by what was done there. Then code writes plain indirect lines from the facts.
+  gives ("the cold of the steps going down"). Piece asked into a room: never evoke another room.
+- `open`: the intuition every character gets when the chapter opens; same rules, softer than
+  mid, at least one fact shown by what was done there.
+- Each line stands alone, remembered later, at most 400 characters. Never a coordinate, a
+  direction, a distance, the piece itself or a forbidden name.
+Answer only `{ "far": {lang: text}, "mid", "near", "open", "cites": { "mid": [ { "fact": "<id>" } ],
+"near": [ ... ] } }`. A place name, or a line showing no fact, refuses it; code writes plain lines.
 
 ### What the bible must hold so the story can be followed
 

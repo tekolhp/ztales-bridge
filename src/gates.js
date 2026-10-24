@@ -302,6 +302,26 @@ export function ensureChapterEnds(directives, node) {
 }
 
 /**
+ * Every chapter opens in every diary (docs/13, Teko 2026-10-23): the heading, the title smudged
+ * until the chapter closes, and an intuition of the new place. The bridge adds one open_chapter to
+ * every stage it accepts (seed and stage, written ahead or not), titled from the bible like
+ * ensureChapterEnds. It is a plain directive, not a reaction on node_changed: a stage's batch is
+ * pushed only once the story already stands on its node, so a reaction armed in it would wait for
+ * an event that is past; applied with the batch, it fires as the chapter is entered. The id is the
+ * chapter's own (`<prefix>chopen_<node>`), so a stage written twice adds nothing. `intuition` is
+ * left out for the first chapter (the day-zero page carries its hint). Mutates `directives`.
+ */
+export function ensureChapterOpen(directives, node, { prefix = "", intuition = null, first = false } = {}) {
+  if (!Array.isArray(directives) || !node || typeof node.id !== "string") return [];
+  const id = `${prefix}chopen_${node.id}`;
+  if (directives.some((d) => isObj(d) && d.id === id)) return [];
+  const title = node.chapter_title || node.title || null;
+  const withIntuition = !first && intuition !== null && intuition !== undefined && intuition !== "";
+  directives.push({ id, type: "open_chapter", chapter: node.id, ...(title ? { title } : {}), ...(withIntuition ? { intuition } : {}) });
+  return [`${id}: the chapter's opening added${withIntuition ? " with its intuition" : ""}`];
+}
+
+/**
  * Can a player read this item? The mod reports note_read only from the game's read window,
  * which opens on our Note and Photo clues; a walkie, a key, a map or a tape is never read.
  * true / false, or null when the item is not ours (left alone).

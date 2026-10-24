@@ -43,7 +43,10 @@ export async function runTick(env, force = false) {
   } catch (e) {
     // connection refused, login refused, timeouts: back off instead of hammering the host
     const n = (state.ftp_failures || 0) + 1;
-    await store.setState({ ftp_failures: n, ftp_backoff_until: nowSec + backoffSec(n) });
+    // what failed, kept so the cause can be read later (any error inside the tick lands here,
+    // not only the FTP's: a timeout, a refused login, or the bridge's own code)
+    await store.setState({ ftp_failures: n, ftp_backoff_until: nowSec + backoffSec(n),
+      ftp_last_error: `${new Date(nowSec * 1000).toISOString()} ${String(e?.stack || e?.message || e).slice(0, 400)}` });
     throw e;
   }
 }

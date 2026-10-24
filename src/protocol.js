@@ -9,7 +9,7 @@ export const DIRECTIVE_TYPES = new Set([
   "lock_door", "unlock_door", "smash_window", "barricade", "world_sound",
   "set_alarm", "weather", "chat", "define_zone", "set_node",
   "journal_status", "season_complete", "diary_entry",
-  "grant_page", "close_chapter", "signal", "reaction", "diary_echo", "radio_static",
+  "grant_page", "close_chapter", "open_chapter", "signal", "reaction", "diary_echo", "radio_static",
   // the finale (docs/10): written by the bridge from a fixed template, never by the AI
   "charge_pieces", "spawn_urn", "open_urn", "sequence", "spawn_wave", "play_sound", "lightning",
   "season_open",
@@ -33,7 +33,9 @@ export const FOCAL_MAX_RADIUS = 3;
 export const CHAT_MAX_CHARS = 240;
 /** Finale directives the bridge writes itself; an AI answer carrying one is refused (docs/10). */
 export const BRIDGE_ONLY_TYPES = new Set(["charge_pieces", "spawn_urn", "open_urn", "sequence", "spawn_wave", "play_sound", "lightning",
-  "climate_pulse", "lights_flicker"]);
+  "climate_pulse", "lights_flicker",
+  // a chapter's opening (docs/13): the bridge adds it to every stage, its intuition from the clue agent
+  "open_chapter"]);
 /** Sounds a play_sound may name: the toolkit's (docs/12, toolkit.js) and the radio ones. The mod's
  *  D.SOUNDS and the client's SOUNDS_OK hold the same names (test/protocol.test.js). */
 export const SOUND_WHITELIST = new Set([...TOOLKIT_SOUNDS, "RadioStatic", "TelevisionStatic"]);
@@ -45,7 +47,7 @@ export const CHARGE_STATS = new Set(["panic", "stress", "unhappiness", "fatigue"
 export const ECHO_MAX_CHARS = 700;
 
 /** Fields a player reads. Each may be a string or { lang: text } (docs/05, each player's language). */
-export const TEXT_FIELDS = ["text", "title", "prompt", "epilogue", "server_line"];
+export const TEXT_FIELDS = ["text", "title", "prompt", "epilogue", "server_line", "intuition"];
 
 /** Outbox files the bridge consumes and deletes. */
 export const OUTBOX_CONSUMED = /^(events|journal)-[\w-]+\.json$/;

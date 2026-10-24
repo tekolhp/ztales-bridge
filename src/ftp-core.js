@@ -113,7 +113,7 @@ async function readAll(readable, ms, maxBytes) {
 export class FtpSession {
   constructor(open, cfg) {
     this.open = open;
-    this.cfg = { port: 21, timeout: 15000, maxBytes: 4 * 1024 * 1024, tls: false, ...cfg };
+    this.cfg = { port: 21, timeout: 30000, maxBytes: 4 * 1024 * 1024, tls: false, ...cfg };
     this.socket = null;
     this.lines = null;
     this.writer = null;

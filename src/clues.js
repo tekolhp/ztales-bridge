@@ -28,7 +28,9 @@ export const CLUES_PROMPT = "Rewrite the three ring lines (far, mid, near) for t
   + "far: the chapter's feeling. mid: turns the reader toward the real kind of place by what was done there. "
   + "near: what only a fact marked distinctive gives (its room's work and smells; a basement: the cold of the steps going down). "
   + "Proper names (the town, the nearest named place) are allowed. Never a coordinate, a direction, a distance, the piece itself, "
-  + "or a forbidden name. Answer only { far, mid, near, cites }.";
+  + "or a forbidden name. "
+  + "open: the intuition every character gets when the chapter opens: the same rules, softer than mid, no fact named, "
+  + "but at least one of the building's facts shown by what was done there. Answer only { far, mid, near, open, cites }.";
 
 /** How long one ring line may be (each language). */
 export const CLUE_TEXT_MAX = 400;
@@ -461,6 +463,42 @@ export function cluesGate(answer, { facts = [], languages = ["en"], room = null 
   return { ok: errors.length === 0, texts, cited, room: nearRoom ? nearRoom.id.slice(5) : null, errors };
 }
 
+/**
+ * The code gate on the chapter's opening intuition (docs/13, Teko 2026-10-23): `open`, written for
+ * every character when the chapter opens. The rings' rules: a text in every language, at most
+ * CLUE_TEXT_MAX characters, never the room's or the kind of place's name (proper names allowed),
+ * and at least one of the building's facts shown through its activity words in every language.
+ * Returns { ok, text, cited: [fact ids], errors }.
+ */
+export function openGate(text, { facts = [], languages = ["en"] } = {}) {
+  const langs = Array.isArray(languages) && languages.length ? languages : ["en"];
+  const errors = [];
+  const propers = facts.filter((f) => f.proper).flatMap((f) => f.words || []).map((w) => normalize(w).trim()).filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const clean = (l) => {
+    const s = textIn(text, l, langs);
+    if (typeof s !== "string") return null;
+    let n = normalize(s);
+    for (const p of propers) n = n.split(` ${p} `).join("  ");
+    return n;
+  };
+  const names = placeNames(facts);
+  for (const l of langs) {
+    const s = textIn(text, l, langs);
+    if (typeof s !== "string" || !s.trim()) { errors.push(`open: no text in ${l}`); continue; }
+    if (s.length > CLUE_TEXT_MAX) errors.push(`open: longer than ${CLUE_TEXT_MAX} characters in ${l}`);
+    for (const hit of nameHits(clean(l), names)) errors.push(`open: names the place ("${hit}") in ${l}`);
+  }
+  const cited = [];
+  for (const f of facts) {
+    const A = factActs(f);
+    if (!A) continue;
+    if (langs.every((l) => { const s = clean(l); return s !== null && !!actHit(s, actsIn(A, l)); })) cited.push(f.id);
+  }
+  if (!errors.length && !cited.length) errors.push("open: shows none of the building's facts");
+  return { ok: errors.length === 0, text, cited, errors };
+}
+
 /** Each ring's diary line in `directives` (src/proximity.js ids) given new texts; ids unchanged. */
 export function withRingTexts(directives, node, texts, prefix = "") {
   const ids = new Map(["far", "mid", "near"].map((k) => [`${prefix}prox_${node}_${k}_r`, k]));
@@ -610,6 +648,33 @@ const PLAIN_NEAR = {
 PLAIN_NEAR.garagestorage = PLAIN_NEAR.garage;
 PLAIN_NEAR.poolroom = PLAIN_NEAR.pool;
 PLAIN_NEAR.classroom = PLAIN_NEAR.school;
+
+/** How a plain opening intuition begins: [en, pt]; the activity line follows. */
+const PLAIN_OPEN_LEAD = ["Before I knew why, it was already with me:", "Antes de saber por quê, isso já estava comigo:"];
+
+/**
+ * The chapter's opening intuition from facts alone (docs/13), when the clue agent did not write
+ * one: the lead, then what the distinctive room smells and sounds of (else what living or working
+ * in that kind of place was like). An intuition, not a ring: no compass, no neighbour, never
+ * "it is in there". In every language in use, like plainRings. null when there is nothing to show.
+ */
+export function plainOpen(facts, { languages = ["en"], room = null } = {}) {
+  if (!facts?.building) return null;
+  const f = facts.facts || [];
+  const has = (id) => f.some((x) => x.id === id);
+  const lineOf = (id) => PLAIN_NEAR[canonRoom(id)] || null;
+  const pick = (room && lineOf(room) ? room : null)
+    || (f.find((x) => x.kind === "room" && x.distinctive && lineOf(x.id.slice(5))) || {}).id?.slice(5) || null;
+  const kind = has("kind:home") ? "home" : has("kind:shop") ? "shop" : has("kind:rural") ? "rural" : null;
+  const line = pick ? lineOf(pick) : kind ? PLAIN_MID[kind] : f.some((x) => x.id === "basement") ? PLAIN_NEAR.basement
+    : f.some((x) => x.kind === "floors") ? PLAIN_NEAR.floors : null;
+  if (!line) return null;
+  const low = (s) => `${s[0].toLowerCase()}${s.slice(1)}`;
+  const en = `${PLAIN_OPEN_LEAD[0]} ${low(line[0])}`;
+  const pt = `${PLAIN_OPEN_LEAD[1]} ${low(line[1])}`;
+  return languages.length <= 1 ? (/^pt/i.test(languages[0] || "") ? pt : en)
+    : Object.fromEntries(languages.map((l) => [l, /^pt/i.test(l) ? pt : en]));
+}
 
 /** Every room the plain near lines cover (tests run each through cluesGate). */
 export const PLAIN_ROOMS = Object.keys(PLAIN_NEAR).filter((k) => k !== "basement" && k !== "floors");
