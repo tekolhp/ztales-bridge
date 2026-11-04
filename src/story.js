@@ -33,9 +33,9 @@ import { BRIDGE_ONLY_TYPES } from "./protocol.js";
 import { stepsDue, stepOf, cycleOf } from "./pacing.js";
 import { chapterEndTexts } from "./chapterend.js";
 import { notePages, noteFaded, readContributions, planExtras, checkExtraChapter, scoreMin } from "./contribution.js";
-import { blockMaterial, gateWatch, WATCH_MAX_PER_CALL } from "./watch.js";
+import { blockMaterial, gateWatch, pullFor, townNames, WATCH_MAX_PER_CALL, WATCH_MAX_CALLS } from "./watch.js";
 import { CLUES_PROMPT, buildingsOf, buildingOfTarget, pieceDirective, buildingFacts, plainRings, cluesGate, withRingTexts,
-  withPieceRoom, ringsIn, stageTexts, openGate, plainOpen } from "./clues.js";
+  withPieceRoom, ringsIn, stageTexts, openGate, plainOpen, factSigns } from "./clues.js";
 import { bodyPlace, bodyCells, bodyForDream, carrierEntry } from "./carrier.js";
 
 export const CLUE_FAMILIES = ["Note", "Map", "Key", "Photo", "Cassette", "VHS", "Walkie", "PartA", "PartB", "PartC"];
@@ -730,7 +730,12 @@ export function makeDecide(deps) {
 
     // Each player's block of play, looked at once (docs/13 item 4): for that player only, a hint
     // fitted to what they did (plainer the longer the chapter stands), a record of the stretch,
-    // or nothing. One call for every block due; one round (nothing is a fine answer).
+    // or nothing. One call for every block due. The agent gets the chapter's REAL place (Teko,
+    // 2026-10-28: a group living in West Point read every hint as West Point, the piece was in
+    // Riverside): the piece's building facts, its town and nearest named place, and per player the
+    // direction and distance band from where their block happened. A hint refused by the gate is
+    // asked again with the exact reason, at most WATCH_MAX_CALLS calls per block (persisted in
+    // `watch_tries`); then that block gets nothing (there are no plain lines for watch).
     async function runWatch(list) {
       const bible = await open(deps.bibleKey, sealed);
       const season = state.season || bible?.season || "";
@@ -745,39 +750,100 @@ export function makeDecide(deps) {
       const pacing = state.pacing || { days: [], sent: 0 };
       const steps = stepsDue(pacing, (state.catalog_index || {}).hint_pace || "auto");
       const forbidden = bible?.forbidden_entities || [];
-      const context = buildContext({
-        task: "watch", state_version: state.state_version || 0,
-        // what the look needs of the story: never the whole bible, never the ending
-        bible: { title: bible?.title ?? null, premise: bible?.premise ?? null, forbidden_entities: forbidden,
-          chapter: { id: axisNode.id, title: axisNode.chapter_title || axisNode.title || null, question: axisNode.question ?? null,
-            place: axisNode.place ?? axisNode.location_fn ?? null, what_happened: axisNode.what_happened ?? null,
-            piece: (axisNode.pieces || []).map((p) => ({ item: p.item, shows: p.shows ?? null }))[0] || null } },
-        state: { node: axisNode.id, languages: state.languages || ["en"] },
-        stall: { step: steps ? stepOf(steps) : 0, cycle: steps ? cycleOf(steps) : 0, played_days: (pacing.days || []).length },
-        watch_for: blocks.map((b) => blockMaterial(events, b)),
-        rejections: failureNote(state, "watch"),
-      });
-      let res;
-      try {
-        res = await deps.ask(deps.system, context, { role: "watch", task: "watch", models: state.models });
-        await logAnswer(store, deps.bibleKey, "watch", nowSec, res);
-        await clearFailure("watch");
-      } catch (e) {
-        await logAnswer(store, deps.bibleKey, "watch", nowSec, null, e);
-        if (e instanceof BrainError) {
-          if (e.raw != null) await store.setState(failureRecord("watch", e, nowSec));
-          return { note: `AI call failed: ${e.message}`, aiFailed: true };
+      const material = new Map(blocks.map((b) => [b, blockMaterial(events, b)]));
+      // the piece's building and the cells around it, nothing more
+      const piece = pieceDirective(Object.values(state.piece_dirs || {}), axisNode);
+      const xy = piece && /^b_(\d+)_(\d+)$/.exec(String(piece.target?.building || ""));
+      const px = xy ? Number(xy[1]) : piece?.target?.x;
+      const py = xy ? Number(xy[2]) : piece?.target?.y;
+      const buildings = Number.isFinite(px) && Number.isFinite(py)
+        ? buildingsOf(await loadCells(t, cellsAround(px, py, index.cell_size || 300), state.catalog_cells), index.building_fields || []) : [];
+      const pb = piece ? buildingOfTarget(piece.target, buildings) : null;
+      const room = pb && typeof piece.target?.room === "string" && (pb.rooms || []).includes(piece.target.room) ? piece.target.room : null;
+      const facts = pb ? buildingFacts(pb, buildings, { room }) : null;
+      const place = pb ? {
+        x: pb.x + (pb.w || 0) / 2, y: pb.y + (pb.h || 0) / 2, region: pb.region || null,
+        allowed: [facts.neighbour?.name, pb.name].filter(Boolean),
+        towns: townNames(index, buildings, [...material.values()].flatMap((m) => m.regions)),
+        signs: factSigns(facts.facts),
+      } : null;
+      const where = facts ? { town: place.region, nearest_named_place: facts.neighbour?.name ?? null,
+        facts: facts.facts.filter((f) => f.kind !== "name").map(({ id, about, distinctive }) => ({ id, about, distinctive })) } : null;
+      const own = Object.fromEntries(blocks.map((b) => [b.player, [...material.get(b).regions, ...material.get(b).places]]));
+      const keyOf = (b) => `${b.player}_${b.to}`;
+      // only the blocks still due are remembered: the record never grows
+      const dueKeys = new Set((state.watch_due || []).map(keyOf));
+      const tries = Object.fromEntries(Object.entries(state.watch_tries || {}).filter(([k]) => dueKeys.has(k)));
+      const saveTries = async () => { state.watch_tries = { ...tries }; await store.setState({ watch_tries: state.watch_tries }); };
+      const triesOf = (b) => tries[keyOf(b)] || { n: 0, why: [] };
+      const settled = new Set();   // answered, refused for good, or nothing asked of it any more
+      const accepted = [];
+      const rejections = [];
+      const notes = [];
+      let asking = blocks.filter((b) => { if (triesOf(b).n < WATCH_MAX_CALLS) return true; settled.add(b); return false; });
+      for (let round = 0; asking.length; round++) {
+        if (round > 0) {
+          if ((await store.callsSince(nowSec - 86400)) >= maxCalls) { notes.push("watch retry waits: daily AI call cap reached"); break; }
+          if ((await store.costSince(nowSec - 86400)) >= maxUsd) { notes.push("watch retry waits: daily AI budget reached"); break; }
         }
-        throw e;
+        const n = Math.max(...asking.map((b) => triesOf(b).n));
+        for (const b of asking) tries[keyOf(b)] = { ...triesOf(b), n: triesOf(b).n + 1 };
+        await saveTries();
+        const purpose = n ? `watch.retry${n}` : "watch";
+        const context = buildContext({
+          task: "watch", state_version: state.state_version || 0,
+          // what the look needs of the story: never the whole bible, never the ending
+          bible: { title: bible?.title ?? null, premise: bible?.premise ?? null, forbidden_entities: forbidden,
+            chapter: { id: axisNode.id, title: axisNode.chapter_title || axisNode.title || null, question: axisNode.question ?? null,
+              place: axisNode.place ?? axisNode.location_fn ?? null, what_happened: axisNode.what_happened ?? null,
+              piece: (axisNode.pieces || []).map((p) => ({ item: p.item, shows: p.shows ?? null }))[0] || null,
+              ...(where ? { where } : {}) } },
+          state: { node: axisNode.id, languages: state.languages || ["en"] },
+          stall: { step: steps ? stepOf(steps) : 0, cycle: steps ? cycleOf(steps) : 0, played_days: (pacing.days || []).length },
+          watch_for: asking.map((b) => ({ ...material.get(b), ...(place ? { pull: pullFor(place, material.get(b)) } : {}) })),
+          rejections: [...(round === 0 ? failureNote(state, "watch") : []), ...asking.flatMap((b) => triesOf(b).why || [])],
+        });
+        let res;
+        try {
+          res = await deps.ask(deps.system, context, { role: "watch", task: "watch", models: state.models });
+          await clearFailure("watch");
+        } catch (e) {
+          await logAnswer(store, deps.bibleKey, purpose, nowSec, null, e);
+          if (!(e instanceof BrainError)) throw e;
+          if (e.raw != null) await store.setState(failureRecord("watch", e, nowSec));
+          for (const b of asking) tries[keyOf(b)] = { ...tries[keyOf(b)], why: clueReasons({ err: e }) };
+          await saveTries();
+          // the first call failed: the blocks wait for the back-off, as any failed call
+          if (round === 0) return { note: `AI call failed: ${e.message}`, aiFailed: true };
+          notes.push(`${purpose}: AI call failed (${String(e.message).slice(0, 120)})`);
+          break;
+        }
+        const pieceIds = new Set((bible?.axis || []).flatMap((x) => (x.pieces || []).map((p) => p.story_id)));
+        const g = gateWatch(res.doc, { asked: new Map(asking.map((b) => [b.player, b])), season, languages: state.languages || ["en"],
+          forbidden, storyIds: pieceIds, pushedIds: await store.sentIds(), place, own });
+        accepted.push(...g.accepted);
+        rejections.push(...g.rejections);
+        const refused = [];
+        for (const b of asking) {
+          const why = g.rejections.filter((r) => r.player === b.player);
+          if (g.accepted.some((d) => d.player === b.player) || !why.length) { settled.add(b); delete tries[keyOf(b)]; continue; }
+          tries[keyOf(b)] = { ...tries[keyOf(b)], why: [{ id: `watch_${b.player}`, reason: `your entry for ${b.player} was refused, fix exactly this: ${why.map((r) => r.reason).join("; ")}`.slice(0, 400) }] };
+          if (tries[keyOf(b)].n >= WATCH_MAX_CALLS) settled.add(b);
+          else refused.push(b);
+        }
+        await saveTries();
+        await logAnswer(store, deps.bibleKey, purpose, nowSec, { ...res, note: [res.note,
+          g.rejections.length ? `refused by the watch gate: ${g.rejections.map((r) => r.reason).join("; ")}`.slice(0, 250) : null].filter(Boolean).join("; ") || null });
+        asking = refused;
       }
-      const pieceIds = new Set((bible?.axis || []).flatMap((n) => (n.pieces || []).map((p) => p.story_id)));
-      const g = gateWatch(res.doc, { asked: new Map(blocks.map((b) => [b.player, b])), season, languages: state.languages || ["en"],
-        forbidden, storyIds: pieceIds, pushedIds: await store.sentIds() });
-      // answered or not, a block is looked at once
-      await store.setState({ watch_due: left });
-      const quiet = blocks.filter((b) => !g.accepted.some((d) => d.player === b.player)).map((b) => b.player);
-      return { directives: g.accepted, rejections: g.rejections,
-        note: `watch: ${g.accepted.map((d) => `${d.kind} for ${d.player}`).join(", ") || "nothing written"}${quiet.length ? ` (nothing for ${quiet.join(", ")})` : ""}` };
+      // answered, refused WATCH_MAX_CALLS times, or nothing to say: looked at for good; the rest
+      // (a retry the cap or a failed call stopped) stays due with its reasons for the next tick
+      for (const b of settled) delete tries[keyOf(b)];
+      await saveTries();
+      await store.setState({ watch_due: [...left, ...list.filter((b, i) => !settled.has(blocks[i]))] });
+      const quiet = blocks.filter((b) => settled.has(b) && !accepted.some((d) => d.player === b.player)).map((b) => b.player);
+      return { directives: accepted, rejections,
+        note: [`watch: ${accepted.map((d) => `${d.kind} for ${d.player}`).join(", ") || "nothing written"}${quiet.length ? ` (nothing for ${quiet.join(", ")})` : ""}`, ...notes].join("; ") };
     }
 
     // The clue agent (src/clues.js): the chapter model rewrites the rings from the building the

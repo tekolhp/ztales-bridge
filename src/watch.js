@@ -11,6 +11,7 @@
  * (never delivered on the spot).
  */
 import { gateBatch } from "./gates.js";
+import { compass, normalize, signHit } from "./clues.js";
 
 export const WATCH_BLOCK_HOURS = 12;
 export const WATCH_HOURS_MIN = 1;
@@ -20,6 +21,8 @@ export const WATCH_TTL_SEC = 2 * 86400;
 /** At most this many blocks in one call (the rest wait for the next tick). */
 export const WATCH_MAX_PER_CALL = 8;
 export const WATCH_MAX_CHARS = 600;
+/** Calls per block (Teko, 2026-10-28): the first and at most two retries, each told what was wrong. */
+export const WATCH_MAX_CALLS = 3;
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -90,8 +93,11 @@ export function blockMaterial(events, { player, from, to }) {
   const diary = [];
   const places = new Set();
   const regions = new Set();
+  let where = null;
   for (const e of events || []) {
     if (!e || e.player !== player || !inBlock(e, from, to)) continue;
+    // where the block happened: the player's last event with a position (journeys carry none)
+    if (typeof e.x === "number" && typeof e.y === "number" && (e.x || e.y)) where = { x: e.x, y: e.y };
     if (e.type === "player_journey") {
       journeys.push({ from: e.from, to: e.to, online_minutes: e.online_minutes, regions: e.regions, named_places: e.named_places,
         walked_tiles: e.walked_tiles, driven_tiles: e.driven_tiles, zombies_killed: e.zombies_killed, companions: e.companions,
@@ -103,7 +109,85 @@ export function blockMaterial(events, { player, from, to }) {
     }
   }
   return { player, hours: Math.round(((to - from) / 3600) * 10) / 10, journeys: journeys.slice(-12), diary: diary.slice(-6),
-    places: [...places].slice(0, 30), regions: [...regions].slice(0, 12) };
+    places: [...places].slice(0, 30), regions: [...regions].slice(0, 12), ...(where ? { where } : {}) };
+}
+
+const shortName = (n) => String(n || "").split(",")[0].trim();
+const sameName = (a, b) => !!a && !!b && normalize(shortName(a)) === normalize(shortName(b));
+
+/**
+ * Where the chapter's piece is, seen from one player's block (Teko, 2026-10-28: the hints of a group
+ * living in West Point read as if the mystery were there; the piece was in Riverside).
+ * place: { x, y, region } (the piece's building, its centre). material: blockMaterial(...).
+ * Returns { direction, distance: "near" | "across town" | "another town" | null, here: bool | null }:
+ * the compass word from where the block happened, the rough band, and whether the piece's town is
+ * among the towns the player went through.
+ */
+export function pullFor(place, material) {
+  if (!place) return null;
+  const regions = material?.regions || [];
+  const here = place.region && regions.length ? regions.some((r) => sameName(r, place.region)) : null;
+  const w = material?.where;
+  let distance = null;
+  let direction = null;
+  if (w && Number.isFinite(place.x)) {
+    const d = Math.hypot(place.x - w.x, place.y - w.y);
+    direction = compass(w.x, w.y, place.x, place.y)?.[0] || null;
+    distance = d <= 150 ? "near" : d <= 700 && here !== false ? "across town" : "another town";
+  } else if (here != null) distance = here ? "across town" : "another town";
+  return { direction, distance, here };
+}
+
+/**
+ * Every town or region name the catalog knows, short forms too ("Muldraugh, KY" -> "Muldraugh"):
+ * the spawn regions, the regions of the buildings loaded, and the regions the players went through.
+ */
+export function townNames(index, buildings = [], extra = []) {
+  const out = new Set();
+  const add = (n) => { for (const v of [String(n || "").trim(), shortName(n)]) if (normalize(v).trim().length >= 3) out.add(v); };
+  for (const r of index?.spawn_regions || []) add(r?.name);
+  for (const b of buildings) add(b?.region);
+  for (const r of extra) add(r);
+  return [...out];
+}
+
+// sentences: at . ! ? ; or a new line, never inside an ellipsis ("West Point, the bridge... starch" is one)
+const sentencesOf = (text) => String(text || "").split(/(?<!\.)[.!?](?!\.)|[;\n]/).map((x) => x.trim()).filter(Boolean);
+const holds = (norm, name) => { const n = normalize(name).trim(); return !!n && norm.includes(` ${n} `); };
+
+/**
+ * The place gate on one hint text (kind hint only; a record may name where they were):
+ *  1. No town or region name but the chapter's region, the nearest named place, or the player's own
+ *     towns of the block (allowed in a report sentence only, rule 2).
+ *  2. A sentence that names the player's own area (a town or named place of their block, not the
+ *     chapter's) never holds a sign of the chapter's place (src/clues.js factSigns): the report of
+ *     the day and the thing sought stay in sentences of their own.
+ * place: { region, allowed: [names], towns: [names], signs: [words] }; own: [names]. Returns reasons.
+ */
+export function hintPlaceErrors(text, place, own = []) {
+  if (!place) return [];
+  const errors = [];
+  const allowed = [place.region, shortName(place.region), ...(place.allowed || [])].filter(Boolean)
+    .map((n) => normalize(n).trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+  const strip = (norm) => { let s = norm; for (const a of allowed) s = s.split(` ${a} `).join(" | "); return s; };
+  const mine = own.filter((n) => !sameName(n, place.region));
+  const norm = strip(normalize(text));
+  const other = (place.towns || []).filter((n) => holds(norm, n) && !mine.some((m) => sameName(m, n)));
+  if (other.length) {
+    errors.push(`a hint names "${shortName(other[0])}": the chapter's place is in ${shortName(place.region) || "another town"}; `
+      + `name only ${[shortName(place.region), ...(place.allowed || [])].filter(Boolean).join(" or ")}, or no town`);
+  }
+  for (const s of sentencesOf(text)) {
+    const n = strip(normalize(s));
+    const area = mine.find((m) => holds(n, m) || holds(n, shortName(m)));
+    const sign = area ? signHit(n, place.signs || []) : null;
+    if (sign) {
+      errors.push(`"${s.slice(0, 80)}" puts "${shortName(area)}" (where they were) and "${sign}" (what is sought) in one sentence: `
+        + "report the day in plain past actions, then the pull in a sentence of its own, as a thought or feeling (But it isn't here. I keep thinking...)");
+      break;
+    }
+  }
+  return errors;
 }
 
 // a map coordinate written out ("10650, 9650", "x 10650", "at 10650/9650") or a building id
@@ -120,7 +204,8 @@ const textsOf = (v) => (typeof v === "string" ? [v] : isObj(v) ? Object.values(v
  * gap, never "now"); kind "watch_hint" or "watch_record".
  *   asked: Map player -> block; storyIds: Set of piece ids (never written in a diary line)
  */
-export function gateWatch(answer, { asked, season = "", languages = ["en"], forbidden = [], storyIds = new Set(), pushedIds = new Set() }) {
+export function gateWatch(answer, { asked, season = "", languages = ["en"], forbidden = [], storyIds = new Set(), pushedIds = new Set(),
+  place = null, own = {} }) {
   const rejections = [];
   const wanted = [];
   const done = new Set();
@@ -130,17 +215,23 @@ export function gateWatch(answer, { asked, season = "", languages = ["en"], forb
     const block = asked.get(d.player);
     if (!block) { rejections.push({ id, reason: `no block of ${d.player} was asked` }); continue; }
     if (done.has(d.player)) { rejections.push({ id, reason: `one entry per player: ${d.player} already has one` }); continue; }
+    const player = d.player;
     const all = textsOf(d.text);
-    if (!all.length || all.some((x) => !x.trim())) { rejections.push({ id, reason: "diary_entry without text" }); continue; }
-    if (all.some((x) => x.length > WATCH_MAX_CHARS)) { rejections.push({ id, reason: `longer than ${WATCH_MAX_CHARS} characters` }); continue; }
-    if (all.some(hasCoordinates)) { rejections.push({ id, reason: "a diary never gives coordinates or a building id" }); continue; }
-    if (all.some((x) => [...storyIds].some((s) => s && x.includes(s)))) { rejections.push({ id, reason: "names a piece's id" }); continue; }
+    if (!all.length || all.some((x) => !x.trim())) { rejections.push({ id, player, reason: "diary_entry without text" }); continue; }
+    if (all.some((x) => x.length > WATCH_MAX_CHARS)) { rejections.push({ id, player, reason: `longer than ${WATCH_MAX_CHARS} characters` }); continue; }
+    if (all.some(hasCoordinates)) { rejections.push({ id, player, reason: "a diary never gives coordinates or a building id" }); continue; }
+    if (all.some((x) => [...storyIds].some((s) => s && x.includes(s)))) { rejections.push({ id, player, reason: "names a piece's id" }); continue; }
     const kind = /record/.test(String(d.kind || "")) ? "watch_record" : "watch_hint";
+    if (kind === "watch_hint" && place) {
+      const bad = all.flatMap((x) => hintPlaceErrors(x, place, own[d.player] || []));
+      if (bad.length) { rejections.push({ id, player, reason: bad[0] }); continue; }
+    }
     // only the fields a diary entry needs; no `deliver`: paced, written in a gap of their own play
     wanted.push({ id: `${season ? `${season}_` : ""}watch_${d.player}_${block.to}`, type: "diary_entry", kind, player: d.player,
       text: d.text, ...(block.node ? { node: block.node } : {}) });
     done.add(d.player);
   }
   const g = gateBatch(wanted, { pushedIds, languages, forbidden });
-  return { accepted: g.accepted, rejections: [...rejections, ...g.rejected] };
+  const playerOf = new Map(wanted.map((w) => [w.id, w.player]));
+  return { accepted: g.accepted, rejections: [...rejections, ...g.rejected.map((r) => ({ ...r, player: playerOf.get(r.id) }))] };
 }

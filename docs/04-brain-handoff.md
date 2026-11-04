@@ -228,8 +228,6 @@ The `task` in your context says which job this is.
   not change the plot, the pieces or what they say. Answer without `bible`.
 - (`seed` is the older single-writer job: bible and node one in one answer. `echo` is the dream
   of a new life, above. `watch` is one look at players' play, below.)
-- A stage may be the **next** chapter, written ahead while players are still in this one: write
-  it the same way; the bridge keeps it until the story gets there.
 - **Answer budget** (a longer answer is cut and lost): a `bible` under 5000 words in all, each
   node's `what_happened` at most 60 words, a piece's `shows` 40, any `leads_to` 20; a `stage`
   under 3500 words. No commentary, nothing said twice. A `previous_answer` rejection means your
@@ -237,14 +235,18 @@ The `task` in your context says which job this is.
 
 ## Watching a player (task `watch`, docs/13)
 
-Every 12 real hours a player has played, you get their block in `watch_for` (per player: the
-journeys, diary lines and places of that stretch) with the current chapter (`bible.chapter`: its
-question, its place by function, its piece) and `stall.step` (0 to 4: how long it has stood).
-For each player, answer at most one `diary_entry` for that player, or nothing:
-- a **hint fitted to what they did**: they passed a hospital, the piece is in another hospital,
-  so the line remembers that hospital and doubts it was the right one. Plainer as `stall.step`
-  grows (0-1: a feeling; 2: what was done there; 3: the kind of place; 4: it and what to look for);
-- or a short **record of their stretch** (`"kind": "record"`), when nothing fits;
+Every 12 real hours a player has played, you get their block in `watch_for` (journeys, diary,
+places; `pull`: `direction`, `distance` to the piece) with `bible.chapter` (its real place in
+`where`: `town`, `nearest_named_place`, `facts`) and `stall.step` (0-4). Per player, one
+`diary_entry` or nothing:
+- a **hint fitted to what they did**, plainer as `stall.step` grows (0-1: a feeling; 2: what was
+  done there; 3: the kind of place; 4: it and what to look for); indirect (as `clues`) below 3.
+  `distance` not "near": the voice pulls away, restless, "it isn't here", these streets worn out
+  for this, a tug toward `town` (or the nearest named place, or "further than the river"), a want
+  to go half resisted. Never their own area as where it is, nor another town. The day in plain
+  past actions; the pull in its own sentence, as a thought ("But it isn't here. Something keeps
+  pulling me toward Riverside...", "Sinto que...");
+- or a short **record of their stretch** (`"kind": "record"`), which may name where they were;
 - never coordinates, a building id, the piece's id, the ending or a forbidden name.
 Answer only `{ "directives": [ { "type": "diary_entry", "player", "kind": "hint" | "record", "text": {lang: text} } ] }`, at most 600 characters each; the whole answer under 6000 characters.
 

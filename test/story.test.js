@@ -1322,6 +1322,84 @@ test("watching respects the daily caps", async () => {
   assert.equal((await store.getState()).watch_due.length, 1, "the block waits");
 });
 
+// Teko, 2026-10-28: the group lives in West Point, the chapter's piece is in Riverside; the hints
+// read "West Point ... the smell of hot starch" and players looked in the wrong town
+async function riversideWatch(answers, opts = {}) {
+  const { t, store } = await seedSetup([seedAnswer()]);
+  const rows = JSON.parse(t.files.get("catalog/cell-35_32.json")).rows.map((r) => { const x = [...r]; x[6] = "Riverside"; return x; });
+  rows[0][7] = "Riverside Diner";
+  t.files.set("catalog/cell-35_32.json", JSON.stringify({ rows }));
+  const s0 = await store.getState();
+  await store.setState({ catalog_index: { ...s0.catalog_index,
+    spawn_regions: [...s0.catalog_index.spawn_regions, { name: "West Point, KY", points: [[11900, 6900]] }] } });
+  let n = 0;
+  const ai = askByTask({ "stage:n2": finalStageAnswer(), watch: (c) => answers[Math.min(n++, answers.length - 1)] });
+  const decide = makeDecide({ ask: ai.ask, system: "S", bibleKey: KEY, ...opts });
+  t.files.set("outbox/seq.json", JSON.stringify({ seq: 2, players_online: 1, active: { ana: 0 } }));
+  await tick({ t, store, nowSec: T0 + 60, decide });
+  const ts = new Date((T0 + 3000) * 1000).toISOString();
+  t.files.set("outbox/events-3-00001.json", JSON.stringify({ events: [
+    { type: "player_journey", player: "ana", ts, regions: ["West Point"], named_places: ["West Point Laundry Co"] },
+    { type: "zombie_killed", player: "ana", ts, x: 11900, y: 6900 },
+  ] }));
+  t.files.set("outbox/seq.json", JSON.stringify({ seq: 3, players_online: 1, active: { ana: 12 * 3600 } }));
+  const r = await tick({ t, store, nowSec: T0 + 50000, decide });
+  return { t, store, ai, r, decide };
+}
+const both = (x) => ({ en: x, "pt-br": x });
+const westHint = { directives: [{ type: "diary_entry", player: "ana", kind: "hint",
+  text: both("Walked West Point again, the bridge... the bitter taste of aspirin, pills on a counter.") }] };
+const riverHint = { directives: [{ type: "diary_entry", player: "ana", kind: "hint",
+  text: both("Today we cleared two houses and burned the bodies. But it isn't here. Something keeps pulling me toward Riverside, a bitter taste I can't place.") }] };
+
+test("watching: the agent gets the chapter's real place; a hint naming the player's own town with the clue is refused, retried with the reason, and passes", async () => {
+  const { t, store, ai, r } = await riversideWatch([westHint, riverHint]);
+  const calls = ai.calls.filter((c) => c.task === "watch");
+  assert.equal(calls.length, 2, "the first call and one retry, in the same tick");
+  const w = calls[0].bible.chapter.where;
+  assert.equal(w.town, "Riverside");
+  assert.equal(w.nearest_named_place, "Riverside Diner");
+  assert.ok(w.facts.some((f) => f.id === "room:pharmacy" && f.distinctive), "the building's facts");
+  const ana = calls[0].watch_for[0];
+  assert.deepEqual(ana.pull, { direction: "southwest", distance: "another town", here: false });
+  assert.deepEqual(calls[0].rejections, []);
+  assert.match(calls[1].rejections.map((x) => x.reason).join(" "), /"West Point" \(where they were\) and "(aspirin|pills)" \(what is sought\) in one sentence/);
+  const sent = sentAll(t).filter((d) => /_watch_/.test(d.id));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text.en, /toward Riverside/);
+  assert.match(JSON.stringify(r.rejected), /in one sentence/);
+  const s = await store.getState();
+  assert.deepEqual(s.watch_due, []);
+  assert.deepEqual(s.watch_tries, {}, "answered: nothing kept");
+  assert.deepEqual(store.callLog.filter((c) => /^watch/.test(c.purpose)).map((c) => [c.purpose, c.cost_usd]),
+    [["watch", 0.01], ["watch.retry1", 0.01]], "each call logged with its cost");
+});
+
+test("watching: a record may name the player's own town; a hint refused three times gets nothing; retries are persisted", async () => {
+  const record = { directives: [{ type: "diary_entry", player: "ana", kind: "record", text: both("Day 444. We've been in West Point so long.") }] };
+  let x = await riversideWatch([record]);
+  assert.equal(x.ai.calls.filter((c) => c.task === "watch").length, 1);
+  assert.equal(sentAll(x.t).filter((d) => /_watch_/.test(d.id))[0].kind, "watch_record");
+  // always the wrong town: three calls, then nothing for that block, and it is never asked again
+  x = await riversideWatch([westHint]);
+  assert.equal(x.ai.calls.filter((c) => c.task === "watch").length, 3);
+  assert.equal(sentAll(x.t).filter((d) => /_watch_/.test(d.id)).length, 0, "no plain lines for watch");
+  assert.match(x.r.notes.join(" "), /nothing for ana/);
+  let s = await x.store.getState();
+  assert.deepEqual(s.watch_due, []);
+  await tick({ t: x.t, store: x.store, nowSec: T0 + 50100, decide: x.decide });
+  assert.equal(x.ai.calls.filter((c) => c.task === "watch").length, 3);
+  // the day's cap stops the retry: the block stays due with its count and reason, and the next
+  // tick resumes from there
+  x = await riversideWatch([westHint, riverHint], { maxCallsPerDay: 2 });
+  assert.equal(x.ai.calls.filter((c) => c.task === "watch").length, 1, "the seed and the first watch spent the day");
+  s = await x.store.getState();
+  assert.equal(s.watch_due.length, 1);
+  const tries = Object.values(s.watch_tries);
+  assert.equal(tries[0].n, 1);
+  assert.match(JSON.stringify(tries[0].why), /in one sentence/);
+});
+
 test("a stage that fails after the page arrived is retried as any failed call, once the back-off is over", async () => {
   const { t, store } = await seedSetup([seedAnswer()]);
   const { BrainError } = await import("../src/brain.js");

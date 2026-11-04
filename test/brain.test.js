@@ -87,6 +87,8 @@ test("the fixed instructions carry the rules, then the lore digest", async () =>
   // 56k: the watch task and the page score / extra chapter contract (docs/13 items 4-5, 2026-10-22),
   // ~500 cached tokens; the watch call itself sends a slim context, so it stays about $0.01
   // 57.5k: the clue agent's task (2026-10-23), ~300 cached tokens; its call sends one building's facts
+  // 2026-10-28: the watch task's pull toward the chapter's real town fits by dropping the retired
+  // "written ahead" note; still under 58k
   assert.ok(sys.length < 58000, `fixed prompt stays compact (${sys.length} chars)`);
 });
 

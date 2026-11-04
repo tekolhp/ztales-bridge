@@ -254,6 +254,28 @@ function actHit(norm, list) {
   return null;
 }
 
+/**
+ * The signs of a building's place (the watch gate, Teko 2026-10-28): the activity words (English and
+ * PT-BR) and the names of its distinctive rooms. A sentence about where a player was may not hold
+ * them (src/watch.js hintPlaceErrors).
+ */
+export function factSigns(facts) {
+  const out = new Set();
+  for (const f of facts || []) {
+    if (f.kind !== "room" || !f.distinctive) continue;
+    const A = factActs(f);
+    for (const w of [...(A?.en || []), ...(A?.pt || [])]) out.add(w);
+    const c = canonRoom(f.id.slice(5));
+    for (const w of c ? [...ROOM_WORDS[c], ...(ROOM_PT[c] || [])] : []) if (!AMBIGUOUS.has(normalize(w).trim())) out.add(w);
+  }
+  return [...out];
+}
+
+/** The first of `words` a normalized text shows (as actHit: whole words, a 4+ letter stem at the end), or null. */
+export function signHit(norm, words) {
+  return actHit(norm, words);
+}
+
 /** A room id -> words to look for: the table above, else the id itself split at a known suffix. */
 export function roomWords(id) {
   const r = String(id || "").toLowerCase();
