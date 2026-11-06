@@ -34,6 +34,7 @@ import { stepsDue, stepOf, cycleOf } from "./pacing.js";
 import { chapterEndTexts } from "./chapterend.js";
 import { notePages, noteFaded, readContributions, planExtras, checkExtraChapter, scoreMin } from "./contribution.js";
 import { blockMaterial, gateWatch, pullFor, townNames, WATCH_MAX_PER_CALL, WATCH_MAX_CALLS } from "./watch.js";
+import { adviceFor, hintRecord, memoryFrom, remember } from "./anchors.js";
 import { CLUES_PROMPT, buildingsOf, buildingOfTarget, pieceDirective, buildingFacts, plainRings, cluesGate, withRingTexts,
   withPieceRoom, ringsIn, stageTexts, openGate, plainOpen, factSigns } from "./clues.js";
 import { bodyPlace, bodyCells, bodyForDream, carrierEntry } from "./carrier.js";
@@ -770,6 +771,10 @@ export function makeDecide(deps) {
       const where = facts ? { town: place.region, nearest_named_place: facts.neighbour?.name ?? null,
         facts: facts.facts.filter((f) => f.kind !== "name").map(({ id, about, distinctive }) => ({ id, about, distinctive })) } : null;
       const own = Object.fromEntries(blocks.map((b) => [b.player, [...material.get(b).regions, ...material.get(b).places]]));
+      // the chapter's last hints (src/anchors.js): what each player's hint must not lean on again.
+      // Read once from what was already sent when the chapter has no memory yet.
+      let memory = state.hint_memory && state.hint_memory.node === axisNode.id ? state.hint_memory
+        : memoryFrom(axisNode.id, typeof store.sentDirectives === "function" ? await store.sentDirectives(300) : []);
       const keyOf = (b) => `${b.player}_${b.to}`;
       // only the blocks still due are remembered: the record never grows
       const dueKeys = new Set((state.watch_due || []).map(keyOf));
@@ -800,7 +805,8 @@ export function makeDecide(deps) {
               ...(where ? { where } : {}) } },
           state: { node: axisNode.id, languages: state.languages || ["en"] },
           stall: { step: steps ? stepOf(steps) : 0, cycle: steps ? cycleOf(steps) : 0, played_days: (pacing.days || []).length },
-          watch_for: asking.map((b) => ({ ...material.get(b), ...(place ? { pull: pullFor(place, material.get(b)) } : {}) })),
+          watch_for: asking.map((b) => ({ ...material.get(b), ...(place ? { pull: pullFor(place, material.get(b)) } : {}),
+            ...adviceFor(memory, b.player) })),
           rejections: [...(round === 0 ? failureNote(state, "watch") : []), ...asking.flatMap((b) => triesOf(b).why || [])],
         });
         let res;
@@ -820,8 +826,10 @@ export function makeDecide(deps) {
         }
         const pieceIds = new Set((bible?.axis || []).flatMap((x) => (x.pieces || []).map((p) => p.story_id)));
         const g = gateWatch(res.doc, { asked: new Map(asking.map((b) => [b.player, b])), season, languages: state.languages || ["en"],
-          forbidden, storyIds: pieceIds, pushedIds: await store.sentIds(), place, own });
+          forbidden, storyIds: pieceIds, pushedIds: await store.sentIds(), place, own, memory });
         accepted.push(...g.accepted);
+        for (const d of g.accepted) if (d.kind === "watch_hint") memory = remember(memory, axisNode.id, hintRecord(d.player, d.text, g.anchors.get(d.id)));
+        await store.setState({ hint_memory: memory });
         rejections.push(...g.rejections);
         const refused = [];
         for (const b of asking) {

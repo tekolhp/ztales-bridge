@@ -41,6 +41,7 @@ export const CLUES_PROMPT = "Rewrite the four ring lines (wide, far, mid, near) 
   + "near: what only a fact marked distinctive gives (its room's work and smells; a basement: the cold of the steps going down). "
   + "Proper names (the town, the nearest named place) are allowed. Never a coordinate, a direction, a distance, the piece itself, "
   + "or a forbidden name. "
+  + "Each line hangs on a different detail of the chapter and a different sense (not always smell): never the same key word in two lines. "
   + "open: the intuition every character gets when the chapter opens: the same rules, softer than mid, no fact named, "
   + "but at least one of the building's facts shown by what was done there. Answer only { wide, far, mid, near, open, cites }. "
   + "The whole answer under 3000 characters: each line short, no commentary, nothing said twice; cites hold only fact ids. "

@@ -12,6 +12,7 @@
  */
 import { gateBatch } from "./gates.js";
 import { compass, normalize, signHit } from "./clues.js";
+import { repeatErrors } from "./anchors.js";
 
 export const WATCH_BLOCK_HOURS = 12;
 export const WATCH_HOURS_MIN = 1;
@@ -113,7 +114,12 @@ export function blockMaterial(events, { player, from, to }) {
 }
 
 const shortName = (n) => String(n || "").split(",")[0].trim();
-const sameName = (a, b) => !!a && !!b && normalize(shortName(a)) === normalize(shortName(b));
+// the game writes some regions run together ("WestPoint") and players and the AI write them apart
+// ("West Point"): both spellings are one place (simulation 2026-11-04: a report naming the player's
+// own West Point was refused as "another town")
+const squash = (n) => normalize(shortName(n)).replace(/ /g, "");
+const sameName = (a, b) => !!a && !!b && squash(a) === squash(b);
+const spellings = (n) => [...new Set([n, String(n || "").replace(/([a-z])([A-Z])/g, "$1 $2")])];
 
 /**
  * Where the chapter's piece is, seen from one player's block (Teko, 2026-10-28: the hints of a group
@@ -170,7 +176,7 @@ export function hintPlaceErrors(text, place, own = []) {
   const allowed = [place.region, shortName(place.region), ...(place.allowed || [])].filter(Boolean)
     .map((n) => normalize(n).trim()).filter(Boolean).sort((a, b) => b.length - a.length);
   const strip = (norm) => { let s = norm; for (const a of allowed) s = s.split(` ${a} `).join(" | "); return s; };
-  const mine = own.filter((n) => !sameName(n, place.region));
+  const mine = own.filter((n) => !sameName(n, place.region)).flatMap(spellings);
   const norm = strip(normalize(text));
   const other = (place.towns || []).filter((n) => holds(norm, n) && !mine.some((m) => sameName(m, n)));
   if (other.length) {
@@ -205,9 +211,10 @@ const textsOf = (v) => (typeof v === "string" ? [v] : isObj(v) ? Object.values(v
  *   asked: Map player -> block; storyIds: Set of piece ids (never written in a diary line)
  */
 export function gateWatch(answer, { asked, season = "", languages = ["en"], forbidden = [], storyIds = new Set(), pushedIds = new Set(),
-  place = null, own = {} }) {
+  place = null, own = {}, memory = null }) {
   const rejections = [];
   const wanted = [];
+  const anchorOf = new Map();   // id -> the anchor it declared (kept by the bridge, never sent)
   const done = new Set();
   for (const d of Array.isArray(answer?.directives) ? answer.directives : []) {
     const id = isObj(d) && typeof d.id === "string" ? d.id : "?";
@@ -226,12 +233,19 @@ export function gateWatch(answer, { asked, season = "", languages = ["en"], forb
       const bad = all.flatMap((x) => hintPlaceErrors(x, place, own[d.player] || []));
       if (bad.length) { rejections.push({ id, player, reason: bad[0] }); continue; }
     }
+    // anchor variety (src/anchors.js): a hint names the detail it hangs on, never the last ones again
+    if (kind === "watch_hint" && memory) {
+      const again = repeatErrors(d.text, d.anchor, memory, player);
+      if (again.length) { rejections.push({ id, player, reason: again.join("; ") }); continue; }
+    }
     // only the fields a diary entry needs; no `deliver`: paced, written in a gap of their own play
     wanted.push({ id: `${season ? `${season}_` : ""}watch_${d.player}_${block.to}`, type: "diary_entry", kind, player: d.player,
       text: d.text, ...(block.node ? { node: block.node } : {}) });
+    anchorOf.set(wanted[wanted.length - 1].id, d.anchor ?? null);
     done.add(d.player);
   }
   const g = gateBatch(wanted, { pushedIds, languages, forbidden });
   const playerOf = new Map(wanted.map((w) => [w.id, w.player]));
-  return { accepted: g.accepted, rejections: [...rejections, ...g.rejected.map((r) => ({ ...r, player: playerOf.get(r.id) }))] };
+  return { accepted: g.accepted, anchors: anchorOf,
+    rejections: [...rejections, ...g.rejected.map((r) => ({ ...r, player: playerOf.get(r.id) }))] };
 }

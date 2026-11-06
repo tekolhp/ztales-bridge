@@ -83,6 +83,9 @@ export class MemoryStore {
   }
 
   async sentIds() { return new Set(this.sent); }
+
+  /** The directives queued so far, oldest first (the last `limit` batches). */
+  async sentDirectives(limit = 200) { return this.queue.slice(-limit).flatMap((q) => q.directives); }
 }
 
 export class D1Store {
@@ -154,6 +157,12 @@ export class D1Store {
     const ins = this.db.prepare("INSERT OR IGNORE INTO sent_ids (id) VALUES (?1)");
     for (const i of ids) stmts.push(ins.bind(i));
     await this.db.batch(stmts);
+  }
+
+  /** The directives queued so far, oldest first (the last `limit` batches). */
+  async sentDirectives(limit = 200) {
+    const { results } = await this.db.prepare("SELECT body FROM outgoing ORDER BY id DESC LIMIT ?1").bind(limit).all();
+    return results.reverse().flatMap((r) => { try { const v = JSON.parse(r.body); return Array.isArray(v) ? v : []; } catch { return []; } });
   }
 
   async sentIds() {

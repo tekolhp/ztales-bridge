@@ -125,3 +125,13 @@ test("the watch place gate: a hint names no other town; the day and the pull nev
   assert.equal(gateWatch({ directives: [{ type: "diary_entry", player: "ana", text: "Muldraugh, the starch." }] },
     { asked: new Map([["ana", westBlock]]), languages: ["en"] }).accepted.length, 1);
 });
+
+test("watch gate: the player's own town written apart (West Point) is the region the game runs together (WestPoint)", async () => {
+  const { hintPlaceErrors } = await import("../src/watch.js");
+  const place = { region: "Riverside", allowed: [], towns: ["West Point", "Riverside", "Muldraugh"], signs: ["starch"] };
+  const ok = "Day 525. Four days in West Point and my hands smell of diesel. But it isn't here. Something keeps pulling me toward Riverside.";
+  assert.deepEqual(hintPlaceErrors(ok, place, ["WestPoint"]), []);
+  const mixed = "Four days in West Point, and starch on my hands.";
+  assert.equal(hintPlaceErrors(mixed, place, ["WestPoint"]).length, 1, "still one sentence mixing the day and the sign");
+  assert.equal(hintPlaceErrors("Something in Muldraugh pulls at me.", place, ["WestPoint"]).length, 1, "another town is still refused");
+});

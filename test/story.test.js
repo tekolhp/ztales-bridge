@@ -1270,7 +1270,7 @@ test("watching: a player's block of 12 real hours played is read once, for that 
   const { t, store } = await seedSetup([seedAnswer()]);
   const both = (x) => ({ en: x, "pt-br": x });
   const ai = askByTask({ "stage:n2": finalStageAnswer(), watch: { directives: [
-    { id: "w1", type: "diary_entry", player: "ana", kind: "hint", deliver: "now", text: both("Not this hospital. Another one, further from the river.") },
+    { id: "w1", type: "diary_entry", player: "ana", kind: "hint", deliver: "now", anchor: "hospital", text: both("Not this hospital. Another one, further from the river.") },
     { id: "w2", type: "diary_entry", player: "dee", text: both("Nobody asked for me.") },
   ] } });
   const decide = makeDecide({ ask: ai.ask, system: "S", bibleKey: KEY });
@@ -1347,9 +1347,9 @@ async function riversideWatch(answers, opts = {}) {
   return { t, store, ai, r, decide };
 }
 const both = (x) => ({ en: x, "pt-br": x });
-const westHint = { directives: [{ type: "diary_entry", player: "ana", kind: "hint",
+const westHint = { directives: [{ type: "diary_entry", player: "ana", kind: "hint", anchor: both("aspirin"),
   text: both("Walked West Point again, the bridge... the bitter taste of aspirin, pills on a counter.") }] };
-const riverHint = { directives: [{ type: "diary_entry", player: "ana", kind: "hint",
+const riverHint = { directives: [{ type: "diary_entry", player: "ana", kind: "hint", anchor: both("bitter"),
   text: both("Today we cleared two houses and burned the bodies. But it isn't here. Something keeps pulling me toward Riverside, a bitter taste I can't place.") }] };
 
 test("watching: the agent gets the chapter's real place; a hint naming the player's own town with the clue is refused, retried with the reason, and passes", async () => {
@@ -1371,6 +1371,8 @@ test("watching: the agent gets the chapter's real place; a hint naming the playe
   const s = await store.getState();
   assert.deepEqual(s.watch_due, []);
   assert.deepEqual(s.watch_tries, {}, "answered: nothing kept");
+  assert.deepEqual([ana.avoid_anchors, ana.worn_words], [[], []], "the agent is told what to avoid (nothing yet)");
+  assert.deepEqual(s.hint_memory.recent.map((x) => [x.player, x.anchors]), [["ana", ["bitte"]]], "the hint sent is remembered with its anchor");
   assert.deepEqual(store.callLog.filter((c) => /^watch/.test(c.purpose)).map((c) => [c.purpose, c.cost_usd]),
     [["watch", 0.01], ["watch.retry1", 0.01]], "each call logged with its cost");
 });
